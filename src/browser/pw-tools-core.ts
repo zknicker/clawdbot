@@ -26,6 +26,30 @@ let nextUploadArmId = 0;
 let nextDialogArmId = 0;
 let nextDownloadArmId = 0;
 
+function extractRoleAndName(line: string): { role: string | null; name: string } {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith("- ")) return { role: null, name: "" };
+  const rest = trimmed.slice(2);
+  const role = rest.split(/\s+/)[0] ?? null;
+  const nameMatch = rest.match(/"([^"]*)"/);
+  return { role, name: (nameMatch?.[1] ?? "").trim() };
+}
+
+function shouldDropSnapshotLine(line: string): boolean {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("- /url:")) return true;
+  const { role, name } = extractRoleAndName(trimmed);
+  if ((role === "generic" || role === "none") && !name) return true;
+  return false;
+}
+
+function filterAiSnapshot(snapshot: string): string {
+  return snapshot
+    .split("\n")
+    .filter((line) => line && !shouldDropSnapshotLine(line))
+    .join("\n");
+}
+
 function requireRef(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
   const roleRef = raw ? parseRoleRef(raw) : null;
@@ -161,7 +185,7 @@ export async function snapshotAiViaPlaywright(opts: {
     ),
     track: "response",
   });
-  let snapshot = String(result?.full ?? "");
+  let snapshot = filterAiSnapshot(String(result?.full ?? ""));
   const maxChars = opts.maxChars;
   const limit =
     typeof maxChars === "number" && Number.isFinite(maxChars) && maxChars > 0
