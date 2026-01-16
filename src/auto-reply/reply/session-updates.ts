@@ -20,7 +20,7 @@ export async function prependSystemEvents(params: {
     if (!trimmed) return null;
     const lower = trimmed.toLowerCase();
     if (lower.includes("reason periodic")) return null;
-    if (lower.includes("heartbeat")) return null;
+    if (lower.startsWith("heartbeat") || lower.startsWith("heartbeat:")) return null;
     if (trimmed.startsWith("Node:")) {
       return trimmed.replace(/ · last input [^·]+/i, "").trim();
     }
