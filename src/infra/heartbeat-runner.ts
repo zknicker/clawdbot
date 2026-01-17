@@ -1,4 +1,11 @@
+import fs from "node:fs/promises";
+
+import { SessionManager } from "@mariozechner/pi-coding-agent";
+import type { Api } from "@mariozechner/pi-ai";
+
 import { resolveAgentConfig, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { acquireSessionWriteLock } from "../agents/session-write-lock.js";
+import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
 import { resolveEffectiveMessagesConfig } from "../agents/identity.js";
 import {
   DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
@@ -8,13 +15,15 @@ import {
 } from "../auto-reply/heartbeat.js";
 import { getReplyFromConfig } from "../auto-reply/reply.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
-import { getChannelPlugin } from "../channels/plugins/index.js";
+import { getChannelPlugin, normalizeChannelId } from "../channels/plugins/index.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import type { ClawdbotConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import {
   loadSessionStore,
+  resolveAgentIdFromSessionKey,
+  resolveSessionFilePath,
   resolveAgentMainSessionKey,
   resolveStorePath,
   saveSessionStore,
@@ -24,8 +33,15 @@ import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging.js";
 import { getQueueSize } from "../process/command-queue.js";
+import {
+  buildAgentPeerSessionKey,
+  normalizeAgentId,
+  normalizeMainKey,
+} from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
-import { normalizeAgentId } from "../routing/session-key.js";
+import { parseTelegramTarget } from "../telegram/targets.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
+import { isWhatsAppGroupJid } from "../whatsapp/normalize.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import {
   type HeartbeatRunResult,
@@ -46,6 +62,7 @@ type HeartbeatDeps = OutboundSendDeps &
 
 const log = createSubsystemLogger("gateway/heartbeat");
 let heartbeatsEnabled = true;
+const HEARTBEAT_CONTEXT_LIMIT = 10;
 
 export function setHeartbeatsEnabled(enabled: boolean) {
   heartbeatsEnabled = enabled;
@@ -262,6 +279,213 @@ function resolveHeartbeatSender(params: {
   return candidates[0] ?? "heartbeat";
 }
 
+function resolveHeartbeatDeliverySessionKey(params: {
+  cfg: ClawdbotConfig;
+  mainSessionKey: string;
+  channel: string;
+  to?: string;
+}): string | null {
+  const { cfg, mainSessionKey, channel } = params;
+  if (mainSessionKey === "global") return null;
+  const to = params.to?.trim();
+  if (!to) return null;
+
+  const agentId = resolveAgentIdFromSessionKey(mainSessionKey);
+  const mainKey = normalizeMainKey(cfg.session?.mainKey);
+
+  const stripPrefix = (value: string, prefix: string) =>
+    value.toLowerCase().startsWith(prefix) ? value.slice(prefix.length).trim() : "";
+
+  const buildKey = (peerKind: "group" | "channel", peerId: string) =>
+    buildAgentPeerSessionKey({
+      agentId,
+      mainKey,
+      channel,
+      peerKind,
+      peerId,
+    });
+
+  switch (channel) {
+    case "discord": {
+      const channelId = stripPrefix(to, "channel:");
+      if (channelId) return buildKey("channel", channelId);
+      return null;
+    }
+    case "slack": {
+      const groupId = stripPrefix(to, "group:");
+      if (groupId) return buildKey("group", groupId);
+      const channelId = stripPrefix(to, "channel:");
+      if (!channelId) return null;
+      const kind =
+        channelId.toUpperCase().startsWith("G") || channelId.toUpperCase().startsWith("H")
+          ? "group"
+          : "channel";
+      return buildKey(kind, channelId);
+    }
+    case "telegram": {
+      const target = parseTelegramTarget(to);
+      const chatId = target.chatId.trim();
+      if (!chatId) return null;
+      const isGroup = target.messageThreadId != null || chatId.startsWith("-");
+      if (!isGroup) return null;
+      const peerId =
+        target.messageThreadId != null ? `${chatId}:topic:${target.messageThreadId}` : chatId;
+      return buildKey("group", peerId);
+    }
+    case "whatsapp": {
+      if (!isWhatsAppGroupJid(to)) return null;
+      return buildKey("group", to);
+    }
+    case "signal": {
+      const groupId = stripPrefix(to, "group:");
+      if (!groupId) return null;
+      return buildKey("group", groupId);
+    }
+    default:
+      return null;
+  }
+}
+
+function collectTextContent(
+  content: string | Array<{ type: string; text?: string }> | undefined,
+): string {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block): block is { type: "text"; text: string } => block.type === "text")
+    .map((block) => block.text)
+    .join(" ");
+}
+
+function truncateLine(text: string, limit = 500): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}...`;
+}
+
+async function buildHeartbeatChannelContext(params: {
+  cfg: ClawdbotConfig;
+  sessionKey: string;
+  limit?: number;
+}): Promise<string | null> {
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
+  const storePath = resolveStorePath(params.cfg.session?.store, { agentId });
+  const store = loadSessionStore(storePath);
+  const entry = store[params.sessionKey];
+  if (!entry?.sessionId) return null;
+
+  const sessionFile = resolveSessionFilePath(entry.sessionId, entry, { agentId });
+  if (!sessionFile) return null;
+  try {
+    await fs.stat(sessionFile);
+  } catch {
+    return null;
+  }
+
+  const sessionManager = SessionManager.open(sessionFile);
+  const context = sessionManager.buildSessionContext();
+  const messages = context.messages;
+  if (!messages.length) return null;
+
+  const limit = Math.max(1, params.limit ?? HEARTBEAT_CONTEXT_LIMIT);
+  const recent = messages.slice(-limit);
+  const lines: string[] = [];
+  for (const message of recent) {
+    const role = message.role;
+    if (role === "toolResult") continue;
+    const content =
+      "content" in message
+        ? (message.content as string | Array<{ type: string; text?: string }>)
+        : undefined;
+    const text = truncateLine(collectTextContent(content));
+    if (!text.trim()) continue;
+    const label = role === "assistant" ? "Assistant" : "User";
+    lines.push(`${label}: ${text.trim()}`);
+  }
+
+  if (lines.length === 0) return null;
+  return `Recent channel context (last ${lines.length} messages):\n${lines.join("\n")}`;
+}
+
+async function appendHeartbeatToDeliverySession(params: {
+  cfg: ClawdbotConfig;
+  sessionKey: string;
+  text: string;
+  nowMs?: number;
+}): Promise<void> {
+  const trimmed = params.text.trim();
+  if (!trimmed) return;
+  const now = params.nowMs ?? Date.now();
+
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
+  const storePath = resolveStorePath(params.cfg.session?.store, { agentId });
+  const store = loadSessionStore(storePath);
+  const entry = store[params.sessionKey];
+  if (!entry?.sessionId) return;
+
+  const sessionFile = resolveSessionFilePath(entry.sessionId, entry, { agentId });
+  if (!sessionFile) return;
+  try {
+    await fs.stat(sessionFile);
+  } catch {
+    return;
+  }
+
+  const sessionLock = await acquireSessionWriteLock({ sessionFile });
+  let appended = false;
+  try {
+    const sessionManager = guardSessionManager(SessionManager.open(sessionFile));
+    const entries = sessionManager.getEntries();
+    let baseAssistant:
+      | {
+          api: Api;
+          provider: string;
+          model: string;
+        }
+      | undefined;
+    for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
+      const item = entries[idx];
+      if (item.type === "message" && item.message?.role === "assistant") {
+        baseAssistant = item.message as typeof baseAssistant;
+        break;
+      }
+    }
+    if (!baseAssistant) return;
+
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: trimmed }],
+      api: baseAssistant.api,
+      provider: baseAssistant.provider,
+      model: baseAssistant.model,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "stop",
+      timestamp: now,
+    });
+    appended = true;
+  } finally {
+    await sessionLock.release();
+  }
+
+  if (appended) {
+    store[params.sessionKey] = { ...entry, updatedAt: now };
+    await saveSessionStore(storePath, store);
+  }
+}
+
 async function restoreHeartbeatUpdatedAt(params: {
   storePath: string;
   sessionKey: string;
@@ -336,7 +560,19 @@ export async function runHeartbeatOnce(opts: {
   const { entry, sessionKey, storePath } = resolveHeartbeatSession(cfg, agentId);
   const previousUpdatedAt = entry?.updatedAt;
   const delivery = resolveHeartbeatDeliveryTarget({ cfg, entry, heartbeat });
-  const lastChannel = delivery.lastChannel;
+  const deliverySessionKey =
+    delivery.channel !== "none"
+      ? resolveHeartbeatDeliverySessionKey({
+          cfg,
+          mainSessionKey: sessionKey,
+          channel: delivery.channel,
+          to: delivery.to,
+        })
+      : null;
+  const lastChannel =
+    delivery.lastChannel && delivery.lastChannel !== INTERNAL_MESSAGE_CHANNEL
+      ? normalizeChannelId(delivery.lastChannel)
+      : undefined;
   const lastAccountId = delivery.lastAccountId;
   const senderProvider = delivery.channel !== "none" ? delivery.channel : lastChannel;
   const senderAllowFrom = senderProvider
@@ -350,7 +586,16 @@ export async function runHeartbeatOnce(opts: {
     lastTo: entry?.lastTo,
     provider: senderProvider,
   });
-  const prompt = resolveHeartbeatPrompt(cfg, heartbeat);
+  let prompt = resolveHeartbeatPrompt(cfg, heartbeat);
+  if (deliverySessionKey && deliverySessionKey !== sessionKey) {
+    const channelContext = await buildHeartbeatChannelContext({
+      cfg,
+      sessionKey: deliverySessionKey,
+    });
+    if (channelContext) {
+      prompt = `${channelContext}\n\n${prompt}`;
+    }
+  }
   const ctx = {
     Body: prompt,
     From: sender,
@@ -511,6 +756,17 @@ export async function runHeartbeatOnce(opts: {
           lastHeartbeatSentAt: startedAt,
         };
         await saveSessionStore(storePath, store);
+      }
+    }
+
+    if (!shouldSkipMain && normalized.text?.trim()) {
+      if (deliverySessionKey && deliverySessionKey !== sessionKey) {
+        await appendHeartbeatToDeliverySession({
+          cfg,
+          sessionKey: deliverySessionKey,
+          text: normalized.text,
+          nowMs: Date.now(),
+        });
       }
     }
 

@@ -8,12 +8,44 @@ read_when:
 Heartbeat runs **periodic agent turns** in the main session so the model can
 surface anything that needs attention without spamming you.
 
-## Quick start (beginner)
+## Supported models
+
+Heartbeats use the agent default model unless you override
+`agents.defaults.heartbeat.model`. Any provider/model that works for the agent
+can be used for heartbeats.
+
+## How heartbeats work
+
+- On each tick, the gateway builds a **system prompt** (same as normal turns)
+  and a **heartbeat user message** from `agents.defaults.heartbeat.prompt`.
+- If the heartbeat has a delivery target with a session transcript, the last
+  10 messages from that target session are **prepended** to the heartbeat user
+  message for fresh context.
+- The model replies. If there is **nothing to send**, it must reply
+  `HEARTBEAT_OK`.
+- `HEARTBEAT_OK` is stripped; if the remaining text is **≤ `ackMaxChars`**
+  (default: 300), the reply is dropped and nothing is delivered.
+
+### Prompt flow
+
+```mermaid
+flowchart TD
+    A([Heartbeat runs]) --> B["Build system prompt<br/>• AGENTS.md<br/>• SOUL.md<br/>• IDENTITY.md<br/>• USER.md<br/>• TOOLS.md<br/>• HEARTBEAT.md"]
+    B --> C["Build user message<br/><code>heartbeat.prompt</code>"]
+    C --> D([Send to model])
+    D --> E{Anything to say?}
+    E -->|No| F(["Reply <code>HEARTBEAT_OK</code>"])
+    E -->|Yes| G([Reply with message])
+    F --> H([No outbound delivery])
+    G --> I(["Deliver to <code>heartbeat.target</code>"])
+```
+
+## How to use heartbeats
 
 1. Leave heartbeats enabled (default is `30m`) or set your own cadence.
-2. Create a tiny `HEARTBEAT.md` checklist in the agent workspace (optional but recommended).
+2. Create a small `HEARTBEAT.md` checklist in the agent workspace (optional but recommended).
 3. Decide where heartbeat messages should go (`target: "last"` is the default).
-4. Optional: enable heartbeat reasoning delivery for transparency.
+4. Optional: enable reasoning delivery for transparency.
 
 Example config:
 
@@ -41,15 +73,13 @@ Example config:
 
 ## What the heartbeat prompt is for
 
-The default prompt is intentionally broad:
-- **Background tasks**: “Consider outstanding tasks” nudges the agent to review
-  follow-ups (inbox, calendar, reminders, queued work) and surface anything urgent.
-- **Human check-in**: “Checkup sometimes on your human during day time” nudges an
-  occasional lightweight “anything you need?” message, but avoids night-time spam
-  by using your configured local timezone (see [/concepts/timezone](/concepts/timezone)).
+The default prompt keeps the heartbeat focused and avoids rehashing stale context:
+- **Checklist-driven**: read and follow `HEARTBEAT.md` when present.
+- **No stale context**: don’t infer or repeat old tasks from prior chats.
+- **Silent when idle**: respond with `HEARTBEAT_OK` if nothing needs attention.
 
-If you want a heartbeat to do something very specific (e.g. “check Gmail PubSub
-stats” or “verify gateway health”), set `agents.defaults.heartbeat.prompt` (or
+If you want a heartbeat to do something specific (e.g. “check Gmail PubSub stats”
+or “verify gateway health”), set `agents.defaults.heartbeat.prompt` (or
 `agents.list[].heartbeat.prompt`) to a custom body (sent verbatim).
 
 ## Response contract
@@ -65,7 +95,7 @@ stats” or “verify gateway health”), set `agents.defaults.heartbeat.prompt`
 Outside heartbeats, stray `HEARTBEAT_OK` at the start/end of a message is stripped
 and logged; a message that is only `HEARTBEAT_OK` is dropped.
 
-## Config
+## Configuration
 
 ```json5
 {
@@ -129,9 +159,10 @@ Example: two agents, only the second agent runs heartbeats.
   - `none`: run the heartbeat but **do not deliver** externally.
 - `to`: optional recipient override (E.164 for WhatsApp, chat id for Telegram, etc.).
 - `prompt`: overrides the default prompt body (not merged).
-- `ackMaxChars`: max chars allowed after `HEARTBEAT_OK` before delivery.
+- `ackMaxChars`: max chars allowed after `HEARTBEAT_OK` before delivery. This guards
+  against small, unintended extra text when the model meant a no-op ack.
 
-## Delivery behavior
+## Runtime behavior
 
 - Heartbeats run in each agent’s **main session** (`agent:<id>:<mainKey>`), or `global`
   when `session.scope = "global"`.
@@ -144,8 +175,12 @@ Example: two agents, only the second agent runs heartbeats.
 ## HEARTBEAT.md (optional)
 
 If a `HEARTBEAT.md` file exists in the workspace, the default prompt tells the
-agent to read it. Think of it as your “heartbeat checklist”: small, stable, and
-safe to include every 30 minutes.
+agent to read it. The model will only act on it if your heartbeat prompt
+explicitly says to read/follow it. Think of it as your “heartbeat checklist”:
+small, stable, and safe to include every 30 minutes.
+
+Tip: if you add a checklist but keep the default prompt, make sure it still
+clearly instructs the model to act on the checklist items.
 
 Keep it tiny (short checklist or reminders) to avoid prompt bloat.
 
@@ -175,7 +210,7 @@ with a better one.”
 Safety note: don’t put secrets (API keys, phone numbers, private tokens) into
 `HEARTBEAT.md` — it becomes part of the prompt context.
 
-## Manual wake (on-demand)
+## Manual wake and system events
 
 You can enqueue a system event and trigger an immediate heartbeat with:
 
@@ -187,6 +222,17 @@ If multiple agents have `heartbeat` configured, a manual wake runs each of those
 agent heartbeats immediately.
 
 Use `--mode next-heartbeat` to wait for the next scheduled tick.
+
+When using `--mode next-heartbeat`, the text is queued as a **system event** for
+the main session and **drained on the next heartbeat**. The queue keeps up to
+20 events (older ones drop) and consecutive duplicates are ignored.
+
+### System events (heartbeat context)
+
+System events are short, human-readable context lines that get **prepended** to
+the next main-session prompt (including heartbeats). They are ephemeral (in
+memory only) and are cleared after being delivered. This is how multiple webhook
+signals can be batched into a single heartbeat run.
 
 ## Reasoning delivery (optional)
 
@@ -200,6 +246,15 @@ When enabled, heartbeats will also deliver a separate message prefixed
 is managing multiple sessions/codexes and you want to see why it decided to ping
 you — but it can also leak more internal detail than you want. Prefer keeping it
 off in group chats.
+
+## Best practices
+
+- Keep `HEARTBEAT.md` short, stable, and action-oriented.
+- If you need a very specific action, set a custom `heartbeat.prompt` and keep it
+  explicit about reading `HEARTBEAT.md`.
+- Use `target: "none"` if you want heartbeats to update internal state without
+  sending messages.
+- Prefer longer intervals for low-priority check-ins to control cost.
 
 ## Cost awareness
 

@@ -307,10 +307,14 @@ export async function resolveReplyDirectives(params: {
     (directives.verboseLevel as VerboseLevel | undefined) ??
     (sessionEntry?.verboseLevel as VerboseLevel | undefined) ??
     (agentCfg?.verboseDefault as VerboseLevel | undefined);
+  const heartbeatReasoningEnabled =
+    opts?.isHeartbeat && agentCfg?.heartbeat?.includeReasoning === true;
   const resolvedReasoningLevel: ReasoningLevel =
-    (directives.reasoningLevel as ReasoningLevel | undefined) ??
-    (sessionEntry?.reasoningLevel as ReasoningLevel | undefined) ??
-    "off";
+    heartbeatReasoningEnabled
+      ? "on"
+      : (directives.reasoningLevel as ReasoningLevel | undefined) ??
+        (sessionEntry?.reasoningLevel as ReasoningLevel | undefined) ??
+        "off";
   const resolvedElevatedLevel = elevatedAllowed
     ? ((directives.elevatedLevel as ElevatedLevel | undefined) ??
       (sessionEntry?.elevatedLevel as ElevatedLevel | undefined) ??
