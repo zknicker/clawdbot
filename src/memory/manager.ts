@@ -100,6 +100,8 @@ const EMBEDDING_INDEX_CONCURRENCY = 4;
 const EMBEDDING_RETRY_MAX_ATTEMPTS = 3;
 const EMBEDDING_RETRY_BASE_DELAY_MS = 500;
 const EMBEDDING_RETRY_MAX_DELAY_MS = 8000;
+const BATCH_FAILURE_LIMIT = 2;
+const SESSION_DELTA_READ_CHUNK_BYTES = 64 * 1024;
 
 const log = createSubsystemLogger("memory");
 
@@ -127,6 +129,10 @@ export class MemoryIndexManager {
     pollIntervalMs: number;
     timeoutMs: number;
   };
+  private batchFailureCount = 0;
+  private batchFailureLastError?: string;
+  private batchFailureLastProvider?: string;
+  private batchFailureLock: Promise<void> = Promise.resolve();
   private db: DatabaseSync;
   private readonly sources: Set<MemorySource>;
   private providerKey: string;
@@ -153,6 +159,11 @@ export class MemoryIndexManager {
   private dirty = false;
   private sessionsDirty = false;
   private sessionsDirtyFiles = new Set<string>();
+  private sessionPendingFiles = new Set<string>();
+  private sessionDeltas = new Map<
+    string,
+    { lastSize: number; pendingBytes: number; pendingMessages: number }
+  >();
   private sessionWarm = new Set<string>();
   private syncing: Promise<void> | null = null;
 
@@ -229,9 +240,6 @@ export class MemoryIndexManager {
     this.ensureSessionListener();
     this.ensureIntervalSync();
     this.dirty = this.sources.has("memory");
-    if (this.sources.has("sessions")) {
-      this.sessionsDirty = true;
-    }
     this.batch = this.resolveBatchConfig();
   }
 
@@ -239,7 +247,9 @@ export class MemoryIndexManager {
     if (!this.settings.sync.onSessionStart) return;
     const key = sessionKey?.trim() || "";
     if (key && this.sessionWarm.has(key)) return;
-    await this.sync({ reason: "session-start" });
+    void this.sync({ reason: "session-start" }).catch((err) => {
+      log.warn(`memory sync failed (session-start): ${String(err)}`);
+    });
     if (key) this.sessionWarm.add(key);
   }
 
@@ -251,9 +261,11 @@ export class MemoryIndexManager {
       sessionKey?: string;
     },
   ): Promise<MemorySearchResult[]> {
-    await this.warmSession(opts?.sessionKey);
+    void this.warmSession(opts?.sessionKey);
     if (this.settings.sync.onSearch && (this.dirty || this.sessionsDirty)) {
-      await this.sync({ reason: "search" });
+      void this.sync({ reason: "search" }).catch((err) => {
+        log.warn(`memory sync failed (search): ${String(err)}`);
+      });
     }
     const cleaned = query.trim();
     if (!cleaned) return [];
@@ -419,6 +431,17 @@ export class MemoryIndexManager {
       loadError?: string;
       dims?: number;
     };
+    batch?: {
+      enabled: boolean;
+      failures: number;
+      limit: number;
+      wait: boolean;
+      concurrency: number;
+      pollIntervalMs: number;
+      timeoutMs: number;
+      lastError?: string;
+      lastProvider?: string;
+    };
   } {
     const sourceFilter = this.buildSourceFilter();
     const files = this.db
@@ -497,6 +520,17 @@ export class MemoryIndexManager {
         extensionPath: this.vector.extensionPath,
         loadError: this.vector.loadError,
         dims: this.vector.dims,
+      },
+      batch: {
+        enabled: this.batch.enabled,
+        failures: this.batchFailureCount,
+        limit: BATCH_FAILURE_LIMIT,
+        wait: this.batch.wait,
+        concurrency: this.batch.concurrency,
+        pollIntervalMs: this.batch.pollIntervalMs,
+        timeoutMs: this.batch.timeoutMs,
+        lastError: this.batchFailureLastError,
+        lastProvider: this.batchFailureLastProvider,
       },
     };
   }
@@ -747,12 +781,133 @@ export class MemoryIndexManager {
   }
 
   private scheduleSessionDirty(sessionFile: string) {
-    this.sessionsDirtyFiles.add(sessionFile);
+    this.sessionPendingFiles.add(sessionFile);
     if (this.sessionWatchTimer) return;
     this.sessionWatchTimer = setTimeout(() => {
       this.sessionWatchTimer = null;
-      this.sessionsDirty = true;
+      void this.processSessionDeltaBatch().catch((err) => {
+        log.warn(`memory session delta failed: ${String(err)}`);
+      });
     }, SESSION_DIRTY_DEBOUNCE_MS);
+  }
+
+  private async processSessionDeltaBatch(): Promise<void> {
+    if (this.sessionPendingFiles.size === 0) return;
+    const pending = Array.from(this.sessionPendingFiles);
+    this.sessionPendingFiles.clear();
+    let shouldSync = false;
+    for (const sessionFile of pending) {
+      const delta = await this.updateSessionDelta(sessionFile);
+      if (!delta) continue;
+      const bytesThreshold = delta.deltaBytes;
+      const messagesThreshold = delta.deltaMessages;
+      const bytesHit =
+        bytesThreshold <= 0 ? delta.pendingBytes > 0 : delta.pendingBytes >= bytesThreshold;
+      const messagesHit =
+        messagesThreshold <= 0
+          ? delta.pendingMessages > 0
+          : delta.pendingMessages >= messagesThreshold;
+      if (!bytesHit && !messagesHit) continue;
+      this.sessionsDirtyFiles.add(sessionFile);
+      this.sessionsDirty = true;
+      delta.pendingBytes =
+        bytesThreshold > 0 ? Math.max(0, delta.pendingBytes - bytesThreshold) : 0;
+      delta.pendingMessages =
+        messagesThreshold > 0 ? Math.max(0, delta.pendingMessages - messagesThreshold) : 0;
+      shouldSync = true;
+    }
+    if (shouldSync) {
+      void this.sync({ reason: "session-delta" }).catch((err) => {
+        log.warn(`memory sync failed (session-delta): ${String(err)}`);
+      });
+    }
+  }
+
+  private async updateSessionDelta(sessionFile: string): Promise<{
+    deltaBytes: number;
+    deltaMessages: number;
+    pendingBytes: number;
+    pendingMessages: number;
+  } | null> {
+    const thresholds = this.settings.sync.sessions;
+    if (!thresholds) return null;
+    let stat: { size: number };
+    try {
+      stat = await fs.stat(sessionFile);
+    } catch {
+      return null;
+    }
+    const size = stat.size;
+    let state = this.sessionDeltas.get(sessionFile);
+    if (!state) {
+      state = { lastSize: 0, pendingBytes: 0, pendingMessages: 0 };
+      this.sessionDeltas.set(sessionFile, state);
+    }
+    const deltaBytes = Math.max(0, size - state.lastSize);
+    if (deltaBytes === 0 && size === state.lastSize) {
+      return {
+        deltaBytes: thresholds.deltaBytes,
+        deltaMessages: thresholds.deltaMessages,
+        pendingBytes: state.pendingBytes,
+        pendingMessages: state.pendingMessages,
+      };
+    }
+    if (size < state.lastSize) {
+      state.lastSize = size;
+      state.pendingBytes += size;
+      const shouldCountMessages =
+        thresholds.deltaMessages > 0 &&
+        (thresholds.deltaBytes <= 0 || state.pendingBytes < thresholds.deltaBytes);
+      if (shouldCountMessages) {
+        state.pendingMessages += await this.countNewlines(sessionFile, 0, size);
+      }
+    } else {
+      state.pendingBytes += deltaBytes;
+      const shouldCountMessages =
+        thresholds.deltaMessages > 0 &&
+        (thresholds.deltaBytes <= 0 || state.pendingBytes < thresholds.deltaBytes);
+      if (shouldCountMessages) {
+        state.pendingMessages += await this.countNewlines(sessionFile, state.lastSize, size);
+      }
+      state.lastSize = size;
+    }
+    this.sessionDeltas.set(sessionFile, state);
+    return {
+      deltaBytes: thresholds.deltaBytes,
+      deltaMessages: thresholds.deltaMessages,
+      pendingBytes: state.pendingBytes,
+      pendingMessages: state.pendingMessages,
+    };
+  }
+
+  private async countNewlines(absPath: string, start: number, end: number): Promise<number> {
+    if (end <= start) return 0;
+    const handle = await fs.open(absPath, "r");
+    try {
+      let offset = start;
+      let count = 0;
+      const buffer = Buffer.alloc(SESSION_DELTA_READ_CHUNK_BYTES);
+      while (offset < end) {
+        const toRead = Math.min(buffer.length, end - offset);
+        const { bytesRead } = await handle.read(buffer, 0, toRead, offset);
+        if (bytesRead <= 0) break;
+        for (let i = 0; i < bytesRead; i += 1) {
+          if (buffer[i] === 10) count += 1;
+        }
+        offset += bytesRead;
+      }
+      return count;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private resetSessionDelta(absPath: string, size: number): void {
+    const state = this.sessionDeltas.get(absPath);
+    if (!state) return;
+    state.lastSize = size;
+    state.pendingBytes = 0;
+    state.pendingMessages = 0;
   }
 
   private isSessionFileForAgent(sessionFile: string): boolean {
@@ -793,7 +948,8 @@ export class MemoryIndexManager {
     if (params?.force) return true;
     const reason = params?.reason;
     if (reason === "session-start" || reason === "watch") return false;
-    return this.sessionsDirty || needsFullReindex;
+    if (needsFullReindex) return true;
+    return this.sessionsDirty && this.sessionsDirtyFiles.size > 0;
   }
 
   private async syncMemoryFiles(params: {
@@ -925,9 +1081,11 @@ export class MemoryIndexManager {
             total: params.progress.total,
           });
         }
+        this.resetSessionDelta(absPath, entry.size);
         return;
       }
       await this.indexFile(entry, { source: "sessions", content: entry.content });
+      this.resetSessionDelta(absPath, entry.size);
       if (params.progress) {
         params.progress.completed += 1;
         params.progress.report({
@@ -1029,8 +1187,10 @@ export class MemoryIndexManager {
         await this.syncSessionFiles({ needsFullReindex, progress: progress ?? undefined });
         this.sessionsDirty = false;
         this.sessionsDirtyFiles.clear();
-      } else if (this.sources.has("sessions")) {
+      } else if (this.sessionsDirtyFiles.size > 0) {
         this.sessionsDirty = true;
+      } else {
+        this.sessionsDirty = false;
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -1170,8 +1330,10 @@ export class MemoryIndexManager {
         await this.syncSessionFiles({ needsFullReindex: true, progress: params.progress });
         this.sessionsDirty = false;
         this.sessionsDirtyFiles.clear();
-      } else if (this.sources.has("sessions")) {
+      } else if (this.sessionsDirtyFiles.size > 0) {
         this.sessionsDirty = true;
+      } else {
+        this.sessionsDirty = false;
       }
 
       nextMeta = {
@@ -1538,7 +1700,8 @@ export class MemoryIndexManager {
     entry: MemoryFileEntry | SessionFileEntry,
     source: MemorySource,
   ): Promise<number[][]> {
-    if (!this.openAi) {
+    const openAi = this.openAi;
+    if (!openAi) {
       return this.embedChunksInBatches(chunks);
     }
     if (chunks.length === 0) return [];
@@ -1576,16 +1739,23 @@ export class MemoryIndexManager {
         },
       });
     }
-    const byCustomId = await runOpenAiEmbeddingBatches({
-      openAi: this.openAi,
-      agentId: this.agentId,
-      requests,
-      wait: this.batch.wait,
-      concurrency: this.batch.concurrency,
-      pollIntervalMs: this.batch.pollIntervalMs,
-      timeoutMs: this.batch.timeoutMs,
-      debug: (message, data) => log.debug(message, { ...data, source, chunks: chunks.length }),
+    const batchResult = await this.runBatchWithFallback({
+      provider: "openai",
+      run: async () =>
+        await runOpenAiEmbeddingBatches({
+          openAi,
+          agentId: this.agentId,
+          requests,
+          wait: this.batch.wait,
+          concurrency: this.batch.concurrency,
+          pollIntervalMs: this.batch.pollIntervalMs,
+          timeoutMs: this.batch.timeoutMs,
+          debug: (message, data) => log.debug(message, { ...data, source, chunks: chunks.length }),
+        }),
+      fallback: async () => await this.embedChunksInBatches(chunks),
     });
+    if (Array.isArray(batchResult)) return batchResult;
+    const byCustomId = batchResult;
 
     const toCache: Array<{ hash: string; embedding: number[] }> = [];
     for (const [customId, embedding] of byCustomId.entries()) {
@@ -1603,7 +1773,8 @@ export class MemoryIndexManager {
     entry: MemoryFileEntry | SessionFileEntry,
     source: MemorySource,
   ): Promise<number[][]> {
-    if (!this.gemini) {
+    const gemini = this.gemini;
+    if (!gemini) {
       return this.embedChunksInBatches(chunks);
     }
     if (chunks.length === 0) return [];
@@ -1638,16 +1809,23 @@ export class MemoryIndexManager {
       });
     }
 
-    const byCustomId = await runGeminiEmbeddingBatches({
-      gemini: this.gemini,
-      agentId: this.agentId,
-      requests,
-      wait: this.batch.wait,
-      concurrency: this.batch.concurrency,
-      pollIntervalMs: this.batch.pollIntervalMs,
-      timeoutMs: this.batch.timeoutMs,
-      debug: (message, data) => log.debug(message, { ...data, source, chunks: chunks.length }),
+    const batchResult = await this.runBatchWithFallback({
+      provider: "gemini",
+      run: async () =>
+        await runGeminiEmbeddingBatches({
+          gemini,
+          agentId: this.agentId,
+          requests,
+          wait: this.batch.wait,
+          concurrency: this.batch.concurrency,
+          pollIntervalMs: this.batch.pollIntervalMs,
+          timeoutMs: this.batch.timeoutMs,
+          debug: (message, data) => log.debug(message, { ...data, source, chunks: chunks.length }),
+        }),
+      fallback: async () => await this.embedChunksInBatches(chunks),
     });
+    if (Array.isArray(batchResult)) return batchResult;
+    const byCustomId = batchResult;
 
     const toCache: Array<{ hash: string; embedding: number[] }> = [];
     for (const [customId, embedding] of byCustomId.entries()) {
@@ -1715,6 +1893,113 @@ export class MemoryIndexManager {
     await Promise.allSettled(workers);
     if (firstError) throw firstError;
     return results;
+  }
+
+  private async withBatchFailureLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release: () => void;
+    const wait = this.batchFailureLock;
+    this.batchFailureLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await wait;
+    try {
+      return await fn();
+    } finally {
+      release!();
+    }
+  }
+
+  private async resetBatchFailureCount(): Promise<void> {
+    await this.withBatchFailureLock(async () => {
+      if (this.batchFailureCount > 0) {
+        log.debug("memory embeddings: batch recovered; resetting failure count");
+      }
+      this.batchFailureCount = 0;
+      this.batchFailureLastError = undefined;
+      this.batchFailureLastProvider = undefined;
+    });
+  }
+
+  private async recordBatchFailure(params: {
+    provider: string;
+    message: string;
+    attempts?: number;
+    forceDisable?: boolean;
+  }): Promise<{ disabled: boolean; count: number }> {
+    return await this.withBatchFailureLock(async () => {
+      if (!this.batch.enabled) {
+        return { disabled: true, count: this.batchFailureCount };
+      }
+      const increment = params.forceDisable
+        ? BATCH_FAILURE_LIMIT
+        : Math.max(1, params.attempts ?? 1);
+      this.batchFailureCount += increment;
+      this.batchFailureLastError = params.message;
+      this.batchFailureLastProvider = params.provider;
+      const disabled = params.forceDisable || this.batchFailureCount >= BATCH_FAILURE_LIMIT;
+      if (disabled) {
+        this.batch.enabled = false;
+      }
+      return { disabled, count: this.batchFailureCount };
+    });
+  }
+
+  private isBatchTimeoutError(message: string): boolean {
+    return /timed out|timeout/i.test(message);
+  }
+
+  private async runBatchWithTimeoutRetry<T>(params: {
+    provider: string;
+    run: () => Promise<T>;
+  }): Promise<T> {
+    try {
+      return await params.run();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (this.isBatchTimeoutError(message)) {
+        log.warn(`memory embeddings: ${params.provider} batch timed out; retrying once`);
+        try {
+          return await params.run();
+        } catch (retryErr) {
+          (retryErr as { batchAttempts?: number }).batchAttempts = 2;
+          throw retryErr;
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async runBatchWithFallback<T>(params: {
+    provider: string;
+    run: () => Promise<T>;
+    fallback: () => Promise<number[][]>;
+  }): Promise<T | number[][]> {
+    if (!this.batch.enabled) {
+      return await params.fallback();
+    }
+    try {
+      const result = await this.runBatchWithTimeoutRetry({
+        provider: params.provider,
+        run: params.run,
+      });
+      await this.resetBatchFailureCount();
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const attempts = (err as { batchAttempts?: number }).batchAttempts ?? 1;
+      const forceDisable = /asyncBatchEmbedContent not available/i.test(message);
+      const failure = await this.recordBatchFailure({
+        provider: params.provider,
+        message,
+        attempts,
+        forceDisable,
+      });
+      const suffix = failure.disabled ? "disabling batch" : "keeping batch enabled";
+      log.warn(
+        `memory embeddings: ${params.provider} batch failed (${failure.count}/${BATCH_FAILURE_LIMIT}); ${suffix}; falling back to non-batch embeddings: ${message}`,
+      );
+      return await params.fallback();
+    }
   }
 
   private getIndexConcurrency(): number {

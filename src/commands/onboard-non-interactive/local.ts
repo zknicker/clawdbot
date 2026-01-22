@@ -1,6 +1,7 @@
 import type { ClawdbotConfig } from "../../config/config.js";
 import { CONFIG_PATH_CLAWDBOT, resolveGatewayPort, writeConfigFile } from "../../config/config.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { formatCliCommand } from "../../cli/command-format.js";
 import { DEFAULT_GATEWAY_DAEMON_RUNTIME } from "../daemon-runtime.js";
 import { healthCommand } from "../health.js";
 import {
@@ -90,7 +91,7 @@ export async function runNonInteractiveOnboardingLocal(params: {
   const daemonRuntimeRaw = opts.daemonRuntime ?? DEFAULT_GATEWAY_DAEMON_RUNTIME;
   if (!opts.skipHealth) {
     const links = resolveControlUiLinks({
-      bind: gatewayResult.bind as "auto" | "lan" | "loopback" | "custom",
+      bind: gatewayResult.bind as "auto" | "lan" | "loopback" | "custom" | "tailnet",
       port: gatewayResult.port,
       customBindHost: nextConfig.gateway?.customBindHost,
       basePath: undefined,
@@ -123,7 +124,7 @@ export async function runNonInteractiveOnboardingLocal(params: {
 
   if (!opts.json) {
     runtime.log(
-      "Tip: run `clawdbot configure --section web` to store your Brave API key for web_search. Docs: https://docs.clawd.bot/tools/web",
+      `Tip: run \`${formatCliCommand("clawdbot configure --section web")}\` to store your Brave API key for web_search. Docs: https://docs.clawd.bot/tools/web`,
     );
   }
 }

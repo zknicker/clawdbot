@@ -22,6 +22,8 @@ export type CallGatewayOptions = {
   url?: string;
   token?: string;
   password?: string;
+  tlsFingerprint?: string;
+  config?: ClawdbotConfig;
   method: string;
   params?: unknown;
   expectFinal?: boolean;
@@ -61,7 +63,7 @@ export function buildGatewayConnectionDetails(
   const localPort = resolveGatewayPort(config);
   const tailnetIPv4 = pickPrimaryTailnetIPv4();
   const bindMode = config.gateway?.bind ?? "loopback";
-  const preferTailnet = bindMode === "auto" && !!tailnetIPv4;
+  const preferTailnet = bindMode === "tailnet" && !!tailnetIPv4;
   const scheme = tlsEnabled ? "wss" : "ws";
   const localUrl =
     preferTailnet && tailnetIPv4
@@ -109,7 +111,7 @@ export function buildGatewayConnectionDetails(
 
 export async function callGateway<T = unknown>(opts: CallGatewayOptions): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
-  const config = loadConfig();
+  const config = opts.config ?? loadConfig();
   const isRemoteMode = config.gateway?.mode === "remote";
   const remote = isRemoteMode ? config.gateway?.remote : undefined;
   const urlOverride =
@@ -138,7 +140,16 @@ export async function callGateway<T = unknown>(opts: CallGatewayOptions): Promis
   const useLocalTls =
     config.gateway?.tls?.enabled === true && !urlOverride && !remoteUrl && url.startsWith("wss://");
   const tlsRuntime = useLocalTls ? await loadGatewayTlsRuntime(config.gateway?.tls) : undefined;
-  const tlsFingerprint = tlsRuntime?.enabled ? tlsRuntime.fingerprintSha256 : undefined;
+  const remoteTlsFingerprint =
+    isRemoteMode && !urlOverride && remoteUrl && typeof remote?.tlsFingerprint === "string"
+      ? remote.tlsFingerprint.trim()
+      : undefined;
+  const overrideTlsFingerprint =
+    typeof opts.tlsFingerprint === "string" ? opts.tlsFingerprint.trim() : undefined;
+  const tlsFingerprint =
+    overrideTlsFingerprint ||
+    remoteTlsFingerprint ||
+    (tlsRuntime?.enabled ? tlsRuntime.fingerprintSha256 : undefined);
   const token =
     (typeof opts.token === "string" && opts.token.trim().length > 0
       ? opts.token.trim()

@@ -30,7 +30,9 @@ const slackBoltModule = SlackBolt as typeof import("@slack/bolt") & {
   default?: typeof import("@slack/bolt");
 };
 // Bun allows named imports from CJS; Node ESM doesn't. Use default+fallback for compatibility.
-const slackBolt = slackBoltModule.default ?? slackBoltModule;
+// Fix: Check if module has App property directly (Node 25.x ESM/CJS compat issue)
+const slackBolt =
+  (slackBoltModule.App ? slackBoltModule : slackBoltModule.default) ?? slackBoltModule;
 const { App, HTTPReceiver } = slackBolt;
 function parseApiAppIdFromAppToken(raw?: string) {
   const token = raw?.trim();

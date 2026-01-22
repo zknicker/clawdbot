@@ -5,6 +5,7 @@ import type { ClawdbotConfig } from "../config/config.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { buildGatewayConnectionDetails } from "../gateway/call.js";
 import { probeGateway } from "../gateway/probe.js";
 import {
@@ -13,6 +14,7 @@ import {
   collectHooksHardeningFindings,
   collectIncludeFilePermFindings,
   collectModelHygieneFindings,
+  collectSmallModelRiskFindings,
   collectPluginsTrustFindings,
   collectSecretsInConfigFindings,
   collectStateDeepFilesystemFindings,
@@ -233,6 +235,17 @@ function collectGatewayConfigFindings(cfg: ClawdbotConfig): SecurityAuditFinding
     });
   }
 
+  if (cfg.gateway?.controlUi?.allowInsecureAuth === true) {
+    findings.push({
+      checkId: "gateway.control_ui.insecure_auth",
+      severity: "warn",
+      title: "Control UI allows insecure HTTP auth",
+      detail:
+        "gateway.controlUi.allowInsecureAuth=true allows token-only auth over HTTP and skips device identity.",
+      remediation: "Disable it or switch to HTTPS (Tailscale Serve) or localhost.",
+    });
+  }
+
   const token =
     typeof auth.token === "string" && auth.token.trim().length > 0 ? auth.token.trim() : null;
   if (auth.mode === "token" && token && token.length < 24) {
@@ -264,7 +277,7 @@ function collectBrowserControlFindings(cfg: ClawdbotConfig): SecurityAuditFindin
       severity: "warn",
       title: "Browser control config looks invalid",
       detail: String(err),
-      remediation: `Fix browser.controlUrl/browser.cdpUrl in ${resolveConfigPath()} and re-run "clawdbot security audit --deep".`,
+      remediation: `Fix browser.controlUrl/browser.cdpUrl in ${resolveConfigPath()} and re-run "${formatCliCommand("clawdbot security audit --deep")}".`,
     });
     return findings;
   }
@@ -804,6 +817,7 @@ export async function runSecurityAudit(opts: SecurityAuditOptions): Promise<Secu
   findings.push(...collectHooksHardeningFindings(cfg));
   findings.push(...collectSecretsInConfigFindings(cfg));
   findings.push(...collectModelHygieneFindings(cfg));
+  findings.push(...collectSmallModelRiskFindings({ cfg, env }));
   findings.push(...collectExposureMatrixFindings(cfg));
 
   const configSnapshot =
@@ -840,7 +854,7 @@ export async function runSecurityAudit(opts: SecurityAuditOptions): Promise<Secu
       severity: "warn",
       title: "Gateway probe failed (deep)",
       detail: deep.gateway.error ?? "gateway unreachable",
-      remediation: `Run "clawdbot status --all" to debug connectivity/auth, then re-run "clawdbot security audit --deep".`,
+      remediation: `Run "${formatCliCommand("clawdbot status --all")}" to debug connectivity/auth, then re-run "${formatCliCommand("clawdbot security audit --deep")}".`,
     });
   }
 

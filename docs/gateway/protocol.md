@@ -20,6 +20,16 @@ handshake time.
 
 ## Handshake (connect)
 
+Gateway → Client (pre-connect challenge):
+
+```json
+{
+  "type": "event",
+  "event": "connect.challenge",
+  "payload": { "nonce": "…", "ts": 1737264000000 }
+}
+```
+
 Client → Gateway:
 
 ```json
@@ -43,7 +53,14 @@ Client → Gateway:
     "permissions": {},
     "auth": { "token": "…" },
     "locale": "en-US",
-    "userAgent": "clawdbot-cli/1.2.3"
+    "userAgent": "clawdbot-cli/1.2.3",
+    "device": {
+      "id": "device_fingerprint",
+      "publicKey": "…",
+      "signature": "…",
+      "signedAt": 1737264000000,
+      "nonce": "…"
+    }
   }
 }
 ```
@@ -56,6 +73,18 @@ Gateway → Client:
   "id": "…",
   "ok": true,
   "payload": { "type": "hello-ok", "protocol": 3, "policy": { "tickIntervalMs": 15000 } }
+}
+```
+
+When a device token is issued, `hello-ok` also includes:
+
+```json
+{
+  "auth": {
+    "deviceToken": "…",
+    "role": "operator",
+    "scopes": ["operator.read", "operator.write"]
+  }
 }
 ```
 
@@ -87,7 +116,8 @@ Gateway → Client:
       "id": "device_fingerprint",
       "publicKey": "…",
       "signature": "…",
-      "signedAt": 1737264000000
+      "signedAt": 1737264000000,
+      "nonce": "…"
     }
   }
 }
@@ -123,6 +153,22 @@ Nodes declare capability claims at connect time:
 
 The Gateway treats these as **claims** and enforces server-side allowlists.
 
+## Presence
+
+- `system-presence` returns entries keyed by device identity.
+- Presence entries include `deviceId`, `roles`, and `scopes` so UIs can show a single row per device
+  even when it connects as both **operator** and **node**.
+
+### Node helper methods
+
+- Nodes may call `skills.bins` to fetch the current list of skill executables
+  for auto-allow checks.
+
+## Exec approvals
+
+- When an exec request needs approval, the gateway broadcasts `exec.approval.requested`.
+- Operator clients resolve by calling `exec.approval.resolve` (requires `operator.approvals` scope).
+
 ## Versioning
 
 - `PROTOCOL_VERSION` lives in `src/gateway/protocol/schema.ts`.
@@ -136,6 +182,11 @@ The Gateway treats these as **claims** and enforces server-side allowlists.
 
 - If `CLAWDBOT_GATEWAY_TOKEN` (or `--token`) is set, `connect.params.auth.token`
   must match or the socket is closed.
+- After pairing, the Gateway issues a **device token** scoped to the connection
+  role + scopes. It is returned in `hello-ok.auth.deviceToken` and should be
+  persisted by the client for future connects.
+- Device tokens can be rotated/revoked via `device.token.rotate` and
+  `device.token.revoke` (requires `operator.pairing` scope).
 
 ## Device identity + pairing
 
@@ -144,12 +195,17 @@ The Gateway treats these as **claims** and enforces server-side allowlists.
 - Gateways issue tokens per device + role.
 - Pairing approvals are required for new device IDs unless local auto-approval
   is enabled.
+- **Local** connects include loopback and the gateway host’s own tailnet address
+  (so same‑host tailnet binds can still auto‑approve).
+- All WS clients must include `device` identity during `connect` (operator + node).
+  Control UI can omit it **only** when `gateway.controlUi.allowInsecureAuth` is enabled.
+- Non-local connections must sign the server-provided `connect.challenge` nonce.
 
 ## TLS + pinning
 
 - TLS is supported for WS connections.
 - Clients may optionally pin the gateway cert fingerprint (see `gateway.tls`
-  config and client TLS settings).
+  config plus `gateway.remote.tlsFingerprint` or CLI `--tls-fingerprint`).
 
 ## Scope
 

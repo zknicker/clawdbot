@@ -81,8 +81,8 @@ targets:
       properties:
         CFBundleDisplayName: Clawdbot
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "2026.1.9"
-        CFBundleVersion: "20260109"
+        CFBundleShortVersionString: "2026.1.20"
+        CFBundleVersion: "20260120"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -92,7 +92,7 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
         NSBonjourServices:
-          - _clawdbot-gateway._tcp
+          - _clawdbot-gw._tcp
         NSCameraUsageDescription: Clawdbot can capture photos or short video clips when requested via the gateway.
         NSLocationWhenInUseUsageDescription: Clawdbot uses your location when you allow location sharing.
         NSLocationAlwaysAndWhenInUseUsageDescription: Clawdbot can share your location in the background when you enable Always.
@@ -130,5 +130,5 @@ targets:
       path: Tests/Info.plist
       properties:
         CFBundleDisplayName: ClawdbotTests
-        CFBundleShortVersionString: "2026.1.9"
-        CFBundleVersion: "20260109"
+        CFBundleShortVersionString: "2026.1.20"
+        CFBundleVersion: "20260120"

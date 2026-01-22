@@ -77,9 +77,10 @@ export type SessionConfig = {
   identityLinks?: Record<string, string[]>;
   resetTriggers?: string[];
   idleMinutes?: number;
-  heartbeatIdleMinutes?: number;
   reset?: SessionResetConfig;
   resetByType?: SessionResetByTypeConfig;
+  /** Channel-specific reset overrides (e.g. { discord: { mode: "idle", idleMinutes: 10080 } }). */
+  resetByChannel?: Record<string, SessionResetConfig>;
   store?: string;
   typingIntervalSeconds?: number;
   typingMode?: TypingMode;
@@ -100,6 +101,35 @@ export type LoggingConfig = {
   redactSensitive?: "off" | "tools";
   /** Regex patterns used to redact sensitive tokens (defaults apply when unset). */
   redactPatterns?: string[];
+};
+
+export type DiagnosticsOtelConfig = {
+  enabled?: boolean;
+  endpoint?: string;
+  protocol?: "http/protobuf" | "grpc";
+  headers?: Record<string, string>;
+  serviceName?: string;
+  traces?: boolean;
+  metrics?: boolean;
+  logs?: boolean;
+  /** Trace sample rate (0.0 - 1.0). */
+  sampleRate?: number;
+  /** Metric export interval (ms). */
+  flushIntervalMs?: number;
+};
+
+export type DiagnosticsCacheTraceConfig = {
+  enabled?: boolean;
+  filePath?: string;
+  includeMessages?: boolean;
+  includePrompt?: boolean;
+  includeSystem?: boolean;
+};
+
+export type DiagnosticsConfig = {
+  enabled?: boolean;
+  otel?: DiagnosticsOtelConfig;
+  cacheTrace?: DiagnosticsCacheTraceConfig;
 };
 
 export type WebReconnectConfig = {

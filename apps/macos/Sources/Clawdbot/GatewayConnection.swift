@@ -15,6 +15,7 @@ enum GatewayAgentChannel: String, Codable, CaseIterable, Sendable {
     case signal
     case imessage
     case msteams
+    case bluebubbles
     case webchat
 
     init(raw: String?) {
@@ -147,6 +148,27 @@ actor GatewayConnection {
                     }
                 }
 
+                let nsError = lastError as NSError
+                if nsError.domain == URLError.errorDomain,
+                   let fallback = await GatewayEndpointStore.shared.maybeFallbackToTailnet(from: cfg.url)
+                {
+                    await self.configure(url: fallback.url, token: fallback.token, password: fallback.password)
+                    for delayMs in [150, 400, 900] {
+                        try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+                        do {
+                            guard let client = self.client else {
+                                throw NSError(
+                                    domain: "Gateway",
+                                    code: 0,
+                                    userInfo: [NSLocalizedDescriptionKey: "gateway not configured"])
+                            }
+                            return try await client.request(method: method, params: params, timeoutMs: timeoutMs)
+                        } catch {
+                            lastError = error
+                        }
+                    }
+                }
+
                 throw lastError
             case .remote:
                 let nsError = error as NSError
@@ -243,9 +265,9 @@ actor GatewayConnection {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func sessionDefaultString(_ defaults: [String: AnyCodable]?, key: String) -> String {
-        (defaults?[key]?.stringValue ?? "")
-            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    private func sessionDefaultString(_ defaults: [String: ClawdbotProtocol.AnyCodable]?, key: String) -> String {
+        let raw = defaults?[key]?.value as? String
+        return (raw ?? "").trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     }
 
     func cachedMainSessionKey() -> String? {

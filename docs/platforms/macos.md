@@ -24,7 +24,7 @@ capabilities to the agent as a node.
 ## Local vs remote mode
 
 - **Local** (default): the app attaches to a running local Gateway if present;
-  otherwise it enables the launchd service via `clawdbot daemon`.
+  otherwise it enables the launchd service via `clawdbot gateway install`.
 - **Remote**: the app connects to a Gateway over SSH/Tailscale and never starts
   a local process.
   The app starts the local **node host service** so the remote Gateway can reach this Mac.
@@ -43,7 +43,7 @@ launchctl bootout gui/$UID/com.clawdbot.gateway
 Replace the label with `com.clawdbot.<profile>` when running a named profile.
 
 If the LaunchAgent isn’t installed, enable it from the app or run
-`clawdbot daemon install`.
+`clawdbot gateway install`.
 
 ## Node capabilities (mac)
 
@@ -57,7 +57,7 @@ The macOS app presents itself as a node. Common commands:
 The node reports a `permissions` map so agents can decide what’s allowed.
 
 Node service + app IPC:
-- When the headless node service is running (remote mode), it connects to the Gateway WS as a node.
+- When the headless node host service is running (remote mode), it connects to the Gateway WS as a node.
 - `system.run` executes in the macOS app (UI/TCC context) over a local Unix socket; prompts + output stay in-app.
 
 Diagram (SCI):
@@ -140,22 +140,30 @@ Safety:
 - `swift run Clawdbot` (or Xcode)
 - Package app: `scripts/package-mac-app.sh`
 
-## Debug gateway discovery (macOS CLI)
+## Debug gateway connectivity (macOS CLI)
 
-Use the debug CLI to exercise the same Bonjour + wide‑area discovery code that the
-macOS app uses, without launching the app.
+Use the debug CLI to exercise the same Gateway WebSocket handshake and discovery
+logic that the macOS app uses, without launching the app.
 
 ```bash
 cd apps/macos
-swift run clawdbot-mac-discovery --timeout 3000 --json
+swift run clawdbot-mac connect --json
+swift run clawdbot-mac discover --timeout 3000 --json
 ```
 
-Options:
-- `--include-local`: include gateways that would be filtered as “local”
-- `--timeout <ms>`: overall discovery window (default `2000`)
+Connect options:
+- `--url <ws://host:port>`: override config
+- `--mode <local|remote>`: resolve from config (default: config or local)
+- `--probe`: force a fresh health probe
+- `--timeout <ms>`: request timeout (default: `15000`)
 - `--json`: structured output for diffing
 
-Tip: compare against `pnpm clawdbot gateway discover --json` to see whether the
+Discovery options:
+- `--include-local`: include gateways that would be filtered as “local”
+- `--timeout <ms>`: overall discovery window (default: `2000`)
+- `--json`: structured output for diffing
+
+Tip: compare against `clawdbot gateway discover --json` to see whether the
 macOS app’s discovery pipeline (NWBrowser + tailnet DNS‑SD fallback) differs from
 the Node CLI’s `dns-sd` based discovery.
 

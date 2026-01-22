@@ -1,3 +1,4 @@
+import { formatCliCommand } from "../cli/command-format.js";
 import type { ClawdbotConfig } from "../config/config.js";
 import {
   CONFIG_PATH_CLAWDBOT,
@@ -198,7 +199,9 @@ export async function runConfigureWizard(
         );
       }
       if (!snapshot.valid) {
-        outro("Config invalid. Run `clawdbot doctor` to repair it, then re-run configure.");
+        outro(
+          `Config invalid. Run \`${formatCliCommand("clawdbot doctor")}\` to repair it, then re-run configure.`,
+        );
         runtime.exit(1);
         return;
       }
@@ -356,7 +359,7 @@ export async function runConfigureWizard(
         if (!selected.includes("gateway")) {
           const portInput = guardCancel(
             await text({
-              message: "Gateway port for daemon install",
+              message: "Gateway port for service install",
               initialValue: String(gatewayPort),
               validate: (value) => (Number.isFinite(Number(value)) ? undefined : "Invalid port"),
             }),
@@ -478,7 +481,7 @@ export async function runConfigureWizard(
           if (!didConfigureGateway) {
             const portInput = guardCancel(
               await text({
-                message: "Gateway port for daemon install",
+                message: "Gateway port for service install",
                 initialValue: String(gatewayPort),
                 validate: (value) => (Number.isFinite(Number(value)) ? undefined : "Invalid port"),
               }),

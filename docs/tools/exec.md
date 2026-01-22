@@ -32,15 +32,19 @@ Notes:
 - `gateway`/`node` approvals are controlled by `~/.clawdbot/exec-approvals.json`.
 - `node` requires a paired node (companion app or headless node host).
 - If multiple nodes are available, set `exec.node` or `tools.exec.node` to select one.
+- On non-Windows hosts, exec uses `SHELL` when set; if `SHELL` is `fish`, it prefers `bash` (or `sh`)
+  from `PATH` to avoid fish-incompatible scripts, then falls back to `SHELL` if neither exists.
 
 ## Config
 
 - `tools.exec.notifyOnExit` (default: true): when true, backgrounded exec sessions enqueue a system event and request a heartbeat on exit.
+- `tools.exec.approvalRunningNoticeMs` (default: 10000): emit a single “running” notice when an approval-gated exec runs longer than this (0 disables).
 - `tools.exec.host` (default: `sandbox`)
-- `tools.exec.security` (default: `deny`)
+- `tools.exec.security` (default: `deny` for sandbox, `allowlist` for gateway + node when unset)
 - `tools.exec.ask` (default: `on-miss`)
 - `tools.exec.node` (default: unset)
 - `tools.exec.pathPrepend`: list of directories to prepend to `PATH` for exec runs.
+- `tools.exec.safeBins`: stdin-only safe binaries that can run without explicit allowlist entries.
 
 Example:
 ```json5
@@ -55,13 +59,15 @@ Example:
 
 ### PATH handling
 
-- `host=gateway`: uses the Gateway process `PATH`. Daemons install a minimal `PATH`:
+- `host=gateway`: merges your login-shell `PATH` into the exec environment (unless the exec call
+  already sets `env.PATH`). The daemon itself still runs with a minimal `PATH`:
   - macOS: `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`
   - Linux: `/usr/local/bin`, `/usr/bin`, `/bin`
 - `host=sandbox`: runs `sh -lc` (login shell) inside the container, so `/etc/profile` may reset `PATH`.
   Clawdbot prepends `env.PATH` after profile sourcing; `tools.exec.pathPrepend` applies here too.
 - `host=node`: only env overrides you pass are sent to the node. `tools.exec.pathPrepend` only applies
-  if the exec call already sets `env.PATH`.
+  if the exec call already sets `env.PATH`. Node PATH overrides are accepted only when they prepend
+  the node host PATH (no replacement).
 
 Per-agent node binding (use the agent list index in config):
 
@@ -86,6 +92,18 @@ Example:
 
 Sandboxed agents can require per-request approval before `exec` runs on the gateway or node host.
 See [Exec approvals](/tools/exec-approvals) for the policy, allowlist, and UI flow.
+
+When approvals are required, the exec tool returns immediately with
+`status: "approval-pending"` and an approval id. Once approved (or denied / timed out),
+the Gateway emits system events (`Exec finished` / `Exec denied`). If the command is still
+running after `tools.exec.approvalRunningNoticeMs`, a single `Exec running` notice is emitted.
+
+## Allowlist + safe bins
+
+Allowlist enforcement matches **resolved binary paths only** (no basename matches). When
+`security=allowlist`, shell commands are auto-allowed only if every pipeline segment is
+allowlisted or a safe bin. Chaining (`;`, `&&`, `||`) and redirections are rejected in
+allowlist mode.
 
 ## Examples
 

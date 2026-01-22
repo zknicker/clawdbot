@@ -14,6 +14,8 @@ export type GatewayBonjourBeacon = {
   gatewayTls?: boolean;
   gatewayTlsFingerprintSha256?: string;
   cliPath?: string;
+  role?: string;
+  transport?: string;
   txt?: Record<string, string>;
 };
 
@@ -164,9 +166,9 @@ function parseDnsSdBrowse(stdout: string): string[] {
   const instances = new Set<string>();
   for (const raw of stdout.split("\n")) {
     const line = raw.trim();
-    if (!line || !line.includes("_clawdbot-gateway._tcp")) continue;
+    if (!line || !line.includes("_clawdbot-gw._tcp")) continue;
     if (!line.includes("Add")) continue;
-    const match = line.match(/_clawdbot-gateway\._tcp\.?\s+(.+)$/);
+    const match = line.match(/_clawdbot-gw\._tcp\.?\s+(.+)$/);
     if (match?.[1]) {
       instances.add(decodeDnsSdEscapes(match[1].trim()));
     }
@@ -211,6 +213,8 @@ function parseDnsSdResolve(stdout: string, instanceName: string): GatewayBonjour
     beacon.gatewayTls = raw === "1" || raw === "true" || raw === "yes";
   }
   if (txt.gatewayTlsSha256) beacon.gatewayTlsFingerprintSha256 = txt.gatewayTlsSha256;
+  if (txt.role) beacon.role = txt.role;
+  if (txt.transport) beacon.transport = txt.transport;
 
   if (!beacon.displayName) beacon.displayName = decodedInstanceName;
   return beacon;
@@ -221,13 +225,13 @@ async function discoverViaDnsSd(
   timeoutMs: number,
   run: typeof runCommandWithTimeout,
 ): Promise<GatewayBonjourBeacon[]> {
-  const browse = await run(["dns-sd", "-B", "_clawdbot-gateway._tcp", domain], {
+  const browse = await run(["dns-sd", "-B", "_clawdbot-gw._tcp", domain], {
     timeoutMs,
   });
   const instances = parseDnsSdBrowse(browse.stdout);
   const results: GatewayBonjourBeacon[] = [];
   for (const instance of instances) {
-    const resolved = await run(["dns-sd", "-L", instance, "_clawdbot-gateway._tcp", domain], {
+    const resolved = await run(["dns-sd", "-L", instance, "_clawdbot-gw._tcp", domain], {
       timeoutMs,
     });
     const parsed = parseDnsSdResolve(resolved.stdout, instance);
@@ -264,7 +268,7 @@ async function discoverWideAreaViaTailnetDns(
   // Keep scans bounded: this is a fallback and should not block long.
   ips = ips.slice(0, 40);
 
-  const probeName = `_clawdbot-gateway._tcp.${domain.replace(/\.$/, "")}`;
+  const probeName = `_clawdbot-gw._tcp.${domain.replace(/\.$/, "")}`;
 
   const concurrency = 6;
   let nextIndex = 0;
@@ -308,7 +312,7 @@ async function discoverWideAreaViaTailnetDns(
     if (budget <= 0) break;
     const ptrName = ptr.trim().replace(/\.$/, "");
     if (!ptrName) continue;
-    const instanceName = ptrName.replace(/\.?_clawdbot-gateway\._tcp\..*$/, "");
+    const instanceName = ptrName.replace(/\.?_clawdbot-gw\._tcp\..*$/, "");
 
     const srv = await run(["dig", "+short", "+time=1", "+tries=1", nameserverArg, ptrName, "SRV"], {
       timeoutMs: Math.max(1, Math.min(350, budget)),
@@ -351,6 +355,8 @@ async function discoverWideAreaViaTailnetDns(
       beacon.gatewayTls = raw === "1" || raw === "true" || raw === "yes";
     }
     if (txtMap.gatewayTlsSha256) beacon.gatewayTlsFingerprintSha256 = txtMap.gatewayTlsSha256;
+    if (txtMap.role) beacon.role = txtMap.role;
+    if (txtMap.transport) beacon.transport = txtMap.transport;
 
     results.push(beacon);
   }
@@ -365,9 +371,9 @@ function parseAvahiBrowse(stdout: string): GatewayBonjourBeacon[] {
   for (const raw of stdout.split("\n")) {
     const line = raw.trimEnd();
     if (!line) continue;
-    if (line.startsWith("=") && line.includes("_clawdbot-gateway._tcp")) {
+    if (line.startsWith("=") && line.includes("_clawdbot-gw._tcp")) {
       if (current) results.push(current);
-      const marker = " _clawdbot-gateway._tcp";
+      const marker = " _clawdbot-gw._tcp";
       const idx = line.indexOf(marker);
       const left = idx >= 0 ? line.slice(0, idx).trim() : line;
       const parts = left.split(/\s+/);
@@ -409,6 +415,8 @@ function parseAvahiBrowse(stdout: string): GatewayBonjourBeacon[] {
         current.gatewayTls = raw === "1" || raw === "true" || raw === "yes";
       }
       if (txt.gatewayTlsSha256) current.gatewayTlsFingerprintSha256 = txt.gatewayTlsSha256;
+      if (txt.role) current.role = txt.role;
+      if (txt.transport) current.transport = txt.transport;
     }
   }
 
@@ -421,7 +429,7 @@ async function discoverViaAvahi(
   timeoutMs: number,
   run: typeof runCommandWithTimeout,
 ): Promise<GatewayBonjourBeacon[]> {
-  const args = ["avahi-browse", "-rt", "_clawdbot-gateway._tcp"];
+  const args = ["avahi-browse", "-rt", "_clawdbot-gw._tcp"];
   if (domain && domain !== "local.") {
     // avahi-browse wants a plain domain (no trailing dot)
     args.push("-d", domain.replace(/\.$/, ""));

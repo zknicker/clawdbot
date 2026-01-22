@@ -1,4 +1,9 @@
 export { CHANNEL_MESSAGE_ACTION_NAMES } from "../channels/plugins/message-action-names.js";
+export {
+  BLUEBUBBLES_ACTIONS,
+  BLUEBUBBLES_ACTION_NAMES,
+  BLUEBUBBLES_GROUP_ACTIONS,
+} from "../channels/plugins/bluebubbles-actions.js";
 export type {
   ChannelAccountSnapshot,
   ChannelAccountState,
@@ -53,14 +58,20 @@ export type {
   ChannelToolSend,
 } from "../channels/plugins/types.js";
 export type { ChannelConfigSchema, ChannelPlugin } from "../channels/plugins/types.plugin.js";
-export type { ClawdbotPluginApi } from "../plugins/types.js";
+export type {
+  ClawdbotPluginApi,
+  ClawdbotPluginService,
+  ClawdbotPluginServiceContext,
+} from "../plugins/types.js";
 export type { PluginRuntime } from "../plugins/runtime/types.js";
 export { emptyPluginConfigSchema } from "../plugins/config-schema.js";
 export type { ClawdbotConfig } from "../config/config.js";
 export type { ChannelDock } from "../channels/dock.js";
 export { getChatChannelMeta } from "../channels/registry.js";
 export type {
+  BlockStreamingCoalesceConfig,
   DmPolicy,
+  DmConfig,
   GroupPolicy,
   MSTeamsChannelConfig,
   MSTeamsConfig,
@@ -76,9 +87,18 @@ export {
   TelegramConfigSchema,
 } from "../config/zod-schema.providers-core.js";
 export { WhatsAppConfigSchema } from "../config/zod-schema.providers-whatsapp.js";
+export {
+  BlockStreamingCoalesceSchema,
+  DmConfigSchema,
+  DmPolicySchema,
+  GroupPolicySchema,
+  normalizeAllowFrom,
+  requireOpenAllowFrom,
+} from "../config/zod-schema.core.js";
 export type { RuntimeEnv } from "../runtime.js";
 export type { WizardPrompter } from "../wizard/prompts.js";
 export { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../routing/session-key.js";
+export { resolveAckReaction } from "../agents/identity.js";
 export type { ReplyPayload } from "../auto-reply/types.js";
 export { SILENT_REPLY_TOKEN, isSilentReplyText } from "../auto-reply/tokens.js";
 export {
@@ -89,9 +109,15 @@ export {
 } from "../auto-reply/reply/history.js";
 export type { HistoryEntry } from "../auto-reply/reply/history.js";
 export { mergeAllowlist, summarizeMapping } from "../channels/allowlists/resolve-utils.js";
-export { resolveMentionGating } from "../channels/mention-gating.js";
-export { resolveChannelMediaMaxBytes } from "../channels/plugins/media-limits.js";
 export {
+  resolveMentionGating,
+  resolveMentionGatingWithBypass,
+} from "../channels/mention-gating.js";
+export { resolveChannelMediaMaxBytes } from "../channels/plugins/media-limits.js";
+export type { NormalizedLocation } from "../channels/location.js";
+export { formatLocationText, toLocationContext } from "../channels/location.js";
+export {
+  resolveBlueBubblesGroupRequireMention,
   resolveDiscordGroupRequireMention,
   resolveIMessageGroupRequireMention,
   resolveSlackGroupRequireMention,
@@ -157,6 +183,29 @@ export { formatDocsLink } from "../terminal/links.js";
 export type { HookEntry } from "../hooks/types.js";
 export { normalizeE164 } from "../utils.js";
 export { missingTargetError } from "../infra/outbound/target-errors.js";
+export { registerLogTransport } from "../logging/logger.js";
+export type { LogTransport, LogTransportRecord } from "../logging/logger.js";
+export {
+  emitDiagnosticEvent,
+  isDiagnosticsEnabled,
+  onDiagnosticEvent,
+} from "../infra/diagnostic-events.js";
+export type {
+  DiagnosticEventPayload,
+  DiagnosticHeartbeatEvent,
+  DiagnosticLaneDequeueEvent,
+  DiagnosticLaneEnqueueEvent,
+  DiagnosticMessageProcessedEvent,
+  DiagnosticMessageQueuedEvent,
+  DiagnosticRunAttemptEvent,
+  DiagnosticSessionState,
+  DiagnosticSessionStateEvent,
+  DiagnosticSessionStuckEvent,
+  DiagnosticUsageEvent,
+  DiagnosticWebhookErrorEvent,
+  DiagnosticWebhookProcessedEvent,
+  DiagnosticWebhookReceivedEvent,
+} from "../infra/diagnostic-events.js";
 
 // Channel: Discord
 export {
@@ -186,6 +235,7 @@ export {
   looksLikeSlackTargetId,
   normalizeSlackMessagingTarget,
 } from "../channels/plugins/normalize/slack.js";
+export { buildSlackThreadingToolContext } from "../slack/threading-tool-context.js";
 
 // Channel: Telegram
 export {
@@ -229,3 +279,6 @@ export {
   normalizeWhatsAppMessagingTarget,
 } from "../channels/plugins/normalize/whatsapp.js";
 export { collectWhatsAppStatusIssues } from "../channels/plugins/status-issues/whatsapp.js";
+
+// Channel: BlueBubbles
+export { collectBlueBubblesStatusIssues } from "../channels/plugins/status-issues/bluebubbles.js";

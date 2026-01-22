@@ -116,7 +116,9 @@ describe("gateway bonjour advertiser", () => {
 
     expect(createService).toHaveBeenCalledTimes(1);
     const [gatewayCall] = createService.mock.calls as Array<[Record<string, unknown>]>;
-    expect(gatewayCall?.[0]?.type).toBe("clawdbot-gateway");
+    expect(gatewayCall?.[0]?.type).toBe("clawdbot-gw");
+    const gatewayType = asString(gatewayCall?.[0]?.type, "");
+    expect(gatewayType.length).toBeLessThanOrEqual(15);
     expect(gatewayCall?.[0]?.port).toBe(18789);
     expect(gatewayCall?.[0]?.domain).toBe("local");
     expect(gatewayCall?.[0]?.hostname).toBe("test-host");

@@ -27,6 +27,7 @@ const BASE_METHODS = [
   "models.list",
   "agents.list",
   "skills.status",
+  "skills.bins",
   "skills.install",
   "skills.update",
   "update.run",
@@ -48,6 +49,8 @@ const BASE_METHODS = [
   "device.pair.list",
   "device.pair.approve",
   "device.pair.reject",
+  "device.token.rotate",
+  "device.token.revoke",
   "node.rename",
   "node.list",
   "node.describe",
@@ -78,6 +81,7 @@ export function listGatewayMethods(): string[] {
 }
 
 export const GATEWAY_EVENTS = [
+  "connect.challenge",
   "agent",
   "chat",
   "presence",

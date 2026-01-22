@@ -354,7 +354,7 @@ struct DebugSettings: View {
                         Button("Save") { self.saveRelayRoot() }
                             .buttonStyle(.borderedProminent)
                         Button("Reset") {
-                            let def = FileManager.default.homeDirectoryForCurrentUser
+                            let def = FileManager().homeDirectoryForCurrentUser
                                 .appendingPathComponent("Projects/clawdbot").path
                             self.gatewayRootInput = def
                             self.saveRelayRoot()
@@ -482,6 +482,22 @@ struct DebugSettings: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(
+                        "Note: macOS may require restarting Clawdbot after enabling Accessibility or Screen Recording.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button {
+                        LaunchdManager.startClawdbot()
+                    } label: {
+                        Label("Restart Clawdbot", systemImage: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
 
                 HStack(spacing: 8) {
@@ -743,7 +759,7 @@ struct DebugSettings: View {
 
         do {
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
-            try FileManager.default.createDirectory(
+            try FileManager().createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
             try data.write(to: url, options: [.atomic])
@@ -776,7 +792,7 @@ struct DebugSettings: View {
     }
 
     private func configURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        FileManager().homeDirectoryForCurrentUser
             .appendingPathComponent(".clawdbot")
             .appendingPathComponent("clawdbot.json")
     }

@@ -8,6 +8,7 @@ export const ModelApiSchema = z.union([
   z.literal("anthropic-messages"),
   z.literal("google-generative-ai"),
   z.literal("github-copilot"),
+  z.literal("bedrock-converse-stream"),
 ]);
 
 export const ModelCompatSchema = z
@@ -48,6 +49,9 @@ export const ModelProviderSchema = z
   .object({
     baseUrl: z.string().min(1),
     apiKey: z.string().optional(),
+    auth: z
+      .union([z.literal("api-key"), z.literal("aws-sdk"), z.literal("oauth"), z.literal("token")])
+      .optional(),
     api: ModelApiSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
     authHeader: z.boolean().optional(),
@@ -213,17 +217,7 @@ export const QueueModeBySurfaceSchema = z
   .optional();
 
 export const DebounceMsBySurfaceSchema = z
-  .object({
-    whatsapp: z.number().int().nonnegative().optional(),
-    telegram: z.number().int().nonnegative().optional(),
-    discord: z.number().int().nonnegative().optional(),
-    slack: z.number().int().nonnegative().optional(),
-    signal: z.number().int().nonnegative().optional(),
-    imessage: z.number().int().nonnegative().optional(),
-    msteams: z.number().int().nonnegative().optional(),
-    webchat: z.number().int().nonnegative().optional(),
-  })
-  .strict()
+  .record(z.string(), z.number().int().nonnegative())
   .optional();
 
 export const QueueSchema = z
@@ -231,6 +225,7 @@ export const QueueSchema = z
     mode: QueueModeSchema.optional(),
     byChannel: QueueModeBySurfaceSchema,
     debounceMs: z.number().int().nonnegative().optional(),
+    debounceMsByChannel: DebounceMsBySurfaceSchema,
     cap: z.number().int().positive().optional(),
     drop: QueueDropSchema.optional(),
   })

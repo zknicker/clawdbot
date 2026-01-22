@@ -15,7 +15,7 @@ Recommended path: use the **CLI onboarding wizard** (`clawdbot onboard`). It set
 - channels (WhatsApp/Telegram/Discord/…)
 - pairing defaults (secure DMs)
 - workspace bootstrap + skills
-- optional background daemon
+- optional background service
 
 If you want the deeper reference pages, jump to: [Wizard](/start/wizard), [Setup](/start/setup), [Pairing](/start/pairing), [Security](/gateway/security).
 
@@ -71,7 +71,7 @@ npm install -g clawdbot@latest
 pnpm add -g clawdbot@latest
 ```
 
-## 2) Run the onboarding wizard (and install the daemon)
+## 2) Run the onboarding wizard (and install the service)
 
 ```bash
 clawdbot onboard --install-daemon
@@ -89,7 +89,7 @@ Wizard doc: [Wizard](/start/wizard)
 
 ### Auth: where it lives (important)
 
-- **Recommended Anthropic path:** set an API key (wizard can store it for daemon use). `claude setup-token` is also supported if you want to reuse Claude Code credentials.
+- **Recommended Anthropic path:** set an API key (wizard can store it for service use). `claude setup-token` is also supported if you want to reuse Claude Code credentials.
 
 - OAuth credentials (legacy import): `~/.clawdbot/credentials/oauth.json`
 - Auth profiles (OAuth + API keys): `~/.clawdbot/agents/<agentId>/agent/auth-profiles.json`
@@ -98,10 +98,10 @@ Headless/server tip: do OAuth on a normal machine first, then copy `oauth.json` 
 
 ## 3) Start the Gateway
 
-If you installed the daemon during onboarding, the Gateway should already be running:
+If you installed the service during onboarding, the Gateway should already be running:
 
 ```bash
-clawdbot daemon status
+clawdbot gateway status
 ```
 
 Manual run (foreground):
@@ -115,6 +115,13 @@ If a token is configured, paste it into the Control UI settings (stored as `conn
 
 ⚠️ **Bun warning (WhatsApp + Telegram):** Bun has known issues with these
 channels. If you use WhatsApp or Telegram, run the Gateway with **Node**.
+
+## 3.5) Quick verify (2 min)
+
+```bash
+clawdbot status
+clawdbot health
+```
 
 ## 4) Pair + connect your first chat surface
 
@@ -158,8 +165,10 @@ cd clawdbot
 pnpm install
 pnpm ui:build # auto-installs UI deps on first run
 pnpm build
-pnpm clawdbot onboard --install-daemon
+clawdbot onboard --install-daemon
 ```
+
+If you don’t have a global install yet, run the onboarding step via `pnpm clawdbot ...` from the repo.
 
 Gateway (from this repo):
 
@@ -169,15 +178,13 @@ node dist/entry.js gateway --port 18789 --verbose
 
 ## 7) Verify end-to-end
 
-In a new terminal:
+In a new terminal, send a test message:
 
 ```bash
-clawdbot status
-clawdbot health
 clawdbot message send --target +15555550123 --message "Hello from Clawdbot"
 ```
 
-If `health` shows “no auth configured”, go back to the wizard and set OAuth/key auth — the agent won’t be able to respond without it.
+If `clawdbot health` shows “no auth configured”, go back to the wizard and set OAuth/key auth — the agent won’t be able to respond without it.
 
 Tip: `clawdbot status --all` is the best pasteable, read-only debug report.
 Health probes: `clawdbot health` (or `clawdbot status --deep`) asks the running gateway for a health snapshot.

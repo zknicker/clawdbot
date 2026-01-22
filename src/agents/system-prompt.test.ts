@@ -66,7 +66,7 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).toContain("## Clawdbot CLI Quick Reference");
-    expect(prompt).toContain("clawdbot daemon restart");
+    expect(prompt).toContain("clawdbot gateway restart");
     expect(prompt).toContain("Do not invent commands");
   });
 
@@ -288,6 +288,7 @@ describe("buildAgentSystemPrompt", () => {
         arch: "arm64",
         node: "v20",
         model: "anthropic/claude",
+        defaultModel: "anthropic/claude-opus-4-5",
       },
       "telegram",
       ["inlineButtons"],
@@ -299,6 +300,7 @@ describe("buildAgentSystemPrompt", () => {
     expect(line).toContain("os=macOS (arm64)");
     expect(line).toContain("node=v20");
     expect(line).toContain("model=anthropic/claude");
+    expect(line).toContain("default_model=anthropic/claude-opus-4-5");
     expect(line).toContain("channel=telegram");
     expect(line).toContain("capabilities=inlineButtons");
     expect(line).toContain("thinking=low");

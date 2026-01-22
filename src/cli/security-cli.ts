@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import type { Command } from "commander";
 
 import { loadConfig } from "../config/config.js";
@@ -7,6 +6,7 @@ import { runSecurityAudit } from "../security/audit.js";
 import { fixSecurityFootguns } from "../security/fix.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { isRich, theme } from "../terminal/theme.js";
+import { formatCliCommand } from "./command-format.js";
 
 type SecurityAuditOptions = {
   json?: boolean;
@@ -67,10 +67,10 @@ export function registerSecurityCli(program: Command) {
       const lines: string[] = [];
       lines.push(heading("Clawdbot security audit"));
       lines.push(muted(`Summary: ${formatSummary(report.summary)}`));
-      lines.push(muted(`Run deeper: clawdbot security audit --deep`));
+      lines.push(muted(`Run deeper: ${formatCliCommand("clawdbot security audit --deep")}`));
 
       if (opts.fix) {
-        lines.push(muted(`Fix: clawdbot security audit --fix`));
+        lines.push(muted(`Fix: ${formatCliCommand("clawdbot security audit --fix")}`));
         if (!fixResult) {
           lines.push(muted("Fixes: failed to apply (unexpected error)"));
         } else if (
@@ -120,7 +120,7 @@ export function registerSecurityCli(program: Command) {
         lines.push("");
         lines.push(heading(label));
         for (const f of list) {
-          lines.push(`${chalk.gray(f.checkId)} ${f.title}`);
+          lines.push(`${theme.muted(f.checkId)} ${f.title}`);
           lines.push(`  ${f.detail}`);
           if (f.remediation?.trim()) lines.push(`  ${muted(`Fix: ${f.remediation.trim()}`)}`);
         }

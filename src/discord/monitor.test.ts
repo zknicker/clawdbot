@@ -1,5 +1,5 @@
 import type { Guild } from "@buape/carbon";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   allowListMatches,
   buildDiscordMediaPayload,
@@ -17,6 +17,7 @@ import {
   sanitizeDiscordThreadName,
   shouldEmitDiscordReactionNotification,
 } from "./monitor.js";
+import { DiscordMessageListener } from "./monitor/listeners.js";
 
 const fakeGuild = (id: string, name: string) => ({ id, name }) as Guild;
 
@@ -45,6 +46,85 @@ describe("registerDiscordListener", () => {
     expect(registerDiscordListener(listeners, new FakeListener())).toBe(true);
     expect(registerDiscordListener(listeners, new FakeListener())).toBe(false);
     expect(listeners).toHaveLength(1);
+  });
+});
+
+describe("DiscordMessageListener", () => {
+  it("returns before the handler finishes", async () => {
+    let handlerResolved = false;
+    let resolveHandler: (() => void) | null = null;
+    const handlerPromise = new Promise<void>((resolve) => {
+      resolveHandler = () => {
+        handlerResolved = true;
+        resolve();
+      };
+    });
+    const handler = vi.fn(() => handlerPromise);
+    const listener = new DiscordMessageListener(handler);
+
+    await listener.handle(
+      {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
+      {} as unknown as import("@buape/carbon").Client,
+    );
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handlerResolved).toBe(false);
+
+    resolveHandler?.();
+    await handlerPromise;
+  });
+
+  it("logs handler failures", async () => {
+    const logger = {
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as unknown as ReturnType<typeof import("../logging/subsystem.js").createSubsystemLogger>;
+    const handler = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const listener = new DiscordMessageListener(handler, logger);
+
+    await listener.handle(
+      {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
+      {} as unknown as import("@buape/carbon").Client,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("discord handler failed"));
+  });
+
+  it("logs slow handlers after the threshold", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    try {
+      let resolveHandler: (() => void) | null = null;
+      const handlerPromise = new Promise<void>((resolve) => {
+        resolveHandler = resolve;
+      });
+      const handler = vi.fn(() => handlerPromise);
+      const logger = {
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as unknown as ReturnType<typeof import("../logging/subsystem.js").createSubsystemLogger>;
+      const listener = new DiscordMessageListener(handler, logger);
+
+      await listener.handle(
+        {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
+        {} as unknown as import("@buape/carbon").Client,
+      );
+
+      vi.setSystemTime(31_000);
+      resolveHandler?.();
+      await handlerPromise;
+      await Promise.resolve();
+
+      expect(logger.warn).toHaveBeenCalled();
+      const [, meta] = logger.warn.mock.calls[0] ?? [];
+      expect(meta?.durationMs).toBeGreaterThanOrEqual(30_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -200,6 +280,59 @@ describe("discord guild/channel resolution", () => {
       scope: "thread",
     });
     expect(thread?.allowed).toBe(false);
+  });
+
+  it("applies wildcard channel config when no specific match", () => {
+    const guildInfo: DiscordGuildEntryResolved = {
+      channels: {
+        general: { allow: true, requireMention: false },
+        "*": { allow: true, autoThread: true, requireMention: true },
+      },
+    };
+    // Specific channel should NOT use wildcard
+    const general = resolveDiscordChannelConfig({
+      guildInfo,
+      channelId: "123",
+      channelName: "general",
+      channelSlug: "general",
+    });
+    expect(general?.allowed).toBe(true);
+    expect(general?.requireMention).toBe(false);
+    expect(general?.autoThread).toBeUndefined();
+    expect(general?.matchSource).toBe("direct");
+
+    // Unknown channel should use wildcard
+    const random = resolveDiscordChannelConfig({
+      guildInfo,
+      channelId: "999",
+      channelName: "random",
+      channelSlug: "random",
+    });
+    expect(random?.allowed).toBe(true);
+    expect(random?.autoThread).toBe(true);
+    expect(random?.requireMention).toBe(true);
+    expect(random?.matchSource).toBe("wildcard");
+  });
+
+  it("falls back to wildcard when thread channel and parent are missing", () => {
+    const guildInfo: DiscordGuildEntryResolved = {
+      channels: {
+        "*": { allow: true, requireMention: false },
+      },
+    };
+    const thread = resolveDiscordChannelConfigWithFallback({
+      guildInfo,
+      channelId: "thread-123",
+      channelName: "topic",
+      channelSlug: "topic",
+      parentId: "parent-999",
+      parentName: "general",
+      parentSlug: "general",
+      scope: "thread",
+    });
+    expect(thread?.allowed).toBe(true);
+    expect(thread?.matchKey).toBe("*");
+    expect(thread?.matchSource).toBe("wildcard");
   });
 });
 

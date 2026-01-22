@@ -28,12 +28,32 @@ import {
   safeParseJson,
   uniqueSortedStrings,
 } from "./nodes.helpers.js";
+import { loadConfig } from "../../config/config.js";
+import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
 function isNodeEntry(entry: { role?: string; roles?: string[] }) {
   if (entry.role === "node") return true;
   if (Array.isArray(entry.roles) && entry.roles.includes("node")) return true;
   return false;
+}
+
+function normalizeNodeInvokeResultParams(params: unknown): unknown {
+  if (!params || typeof params !== "object") return params;
+  const raw = params as Record<string, unknown>;
+  const normalized: Record<string, unknown> = { ...raw };
+  if (normalized.payloadJSON === null) {
+    delete normalized.payloadJSON;
+  } else if (normalized.payloadJSON !== undefined && typeof normalized.payloadJSON !== "string") {
+    if (normalized.payload === undefined) {
+      normalized.payload = normalized.payloadJSON;
+    }
+    delete normalized.payloadJSON;
+  }
+  if (normalized.error === null) {
+    delete normalized.error;
+  }
+  return normalized;
 }
 
 export const nodeHandlers: GatewayRequestHandlers = {
@@ -255,7 +275,9 @@ export const nodeHandlers: GatewayRequestHandlers = {
           remoteIp: live?.remoteIp ?? paired?.remoteIp,
           caps,
           commands,
+          pathEnv: live?.pathEnv,
           permissions: live?.permissions ?? paired?.permissions,
+          connectedAtMs: live?.connectedAtMs,
           paired: Boolean(paired),
           connected: Boolean(live),
         };
@@ -317,7 +339,9 @@ export const nodeHandlers: GatewayRequestHandlers = {
           remoteIp: live?.remoteIp ?? paired?.remoteIp,
           caps,
           commands,
+          pathEnv: live?.pathEnv,
           permissions: live?.permissions,
+          connectedAtMs: live?.connectedAtMs,
           paired: Boolean(paired),
           connected: Boolean(live),
         },
@@ -353,6 +377,34 @@ export const nodeHandlers: GatewayRequestHandlers = {
     }
 
     await respondUnavailableOnThrow(respond, async () => {
+      const nodeSession = context.nodeRegistry.get(nodeId);
+      if (!nodeSession) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "node not connected", {
+            details: { code: "NOT_CONNECTED" },
+          }),
+        );
+        return;
+      }
+      const cfg = loadConfig();
+      const allowlist = resolveNodeCommandAllowlist(cfg, nodeSession);
+      const allowed = isNodeCommandAllowed({
+        command,
+        declaredCommands: nodeSession.commands,
+        allowlist,
+      });
+      if (!allowed.ok) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "node command not allowed", {
+            details: { reason: allowed.reason, command },
+          }),
+        );
+        return;
+      }
       const res = await context.nodeRegistry.invoke({
         nodeId,
         command,
@@ -384,8 +436,9 @@ export const nodeHandlers: GatewayRequestHandlers = {
       );
     });
   },
-  "node.invoke.result": async ({ params, respond, context }) => {
-    if (!validateNodeInvokeResultParams(params)) {
+  "node.invoke.result": async ({ params, respond, context, client }) => {
+    const normalizedParams = normalizeNodeInvokeResultParams(params);
+    if (!validateNodeInvokeResultParams(normalizedParams)) {
       respondInvalidParams({
         respond,
         method: "node.invoke.result",
@@ -393,7 +446,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
       });
       return;
     }
-    const p = params as {
+    const p = normalizedParams as {
       id: string;
       nodeId: string;
       ok: boolean;
@@ -401,6 +454,11 @@ export const nodeHandlers: GatewayRequestHandlers = {
       payloadJSON?: string | null;
       error?: { code?: string; message?: string } | null;
     };
+    const callerNodeId = client?.connect?.device?.id ?? client?.connect?.client?.id;
+    if (callerNodeId && callerNodeId !== p.nodeId) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "nodeId mismatch"));
+      return;
+    }
     const ok = context.nodeRegistry.handleInvokeResult({
       id: p.id,
       nodeId: p.nodeId,
@@ -415,7 +473,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
     }
     respond(true, { ok: true }, undefined);
   },
-  "node.event": async ({ params, respond, context }) => {
+  "node.event": async ({ params, respond, context, client }) => {
     if (!validateNodeEventParams(params)) {
       respondInvalidParams({
         respond,
@@ -433,6 +491,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
           : null;
     await respondUnavailableOnThrow(respond, async () => {
       const { handleNodeEvent } = await import("../server-node-events.js");
+      const nodeId = client?.connect?.device?.id ?? client?.connect?.client?.id ?? "node";
       const nodeContext = {
         deps: context.deps,
         broadcast: context.broadcast,
@@ -453,7 +512,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
         loadGatewayModelCatalog: context.loadGatewayModelCatalog,
         logGateway: { warn: context.logGateway.warn },
       };
-      await handleNodeEvent(nodeContext, "node", {
+      await handleNodeEvent(nodeContext, nodeId, {
         event: p.event,
         payloadJSON,
       });

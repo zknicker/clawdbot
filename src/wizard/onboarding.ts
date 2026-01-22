@@ -26,6 +26,7 @@ import type {
   OnboardOptions,
   ResetScope,
 } from "../commands/onboard-types.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import type { ClawdbotConfig } from "../config/config.js";
 import {
   CONFIG_PATH_CLAWDBOT,
@@ -97,7 +98,7 @@ export async function runOnboardingWizard(
 
     if (!snapshot.valid) {
       await prompter.outro(
-        "Config invalid. Run `clawdbot doctor` to repair it, then re-run onboarding.",
+        `Config invalid. Run \`${formatCliCommand("clawdbot doctor")}\` to repair it, then re-run onboarding.`,
       );
       runtime.exit(1);
       return;
@@ -133,7 +134,7 @@ export async function runOnboardingWizard(
     }
   }
 
-  const quickstartHint = "Configure details later via clawdbot configure.";
+  const quickstartHint = `Configure details later via ${formatCliCommand("clawdbot configure")}.`;
   const advancedHint = "Configure port, network, Tailscale, and auth options.";
   const explicitFlowRaw = opts.flow?.trim();
   if (explicitFlowRaw && explicitFlowRaw !== "quickstart" && explicitFlowRaw !== "advanced") {
@@ -176,7 +177,11 @@ export async function runOnboardingWizard(
 
     const bindRaw = baseConfig.gateway?.bind;
     const bind =
-      bindRaw === "loopback" || bindRaw === "lan" || bindRaw === "auto" || bindRaw === "custom"
+      bindRaw === "loopback" ||
+      bindRaw === "lan" ||
+      bindRaw === "auto" ||
+      bindRaw === "custom" ||
+      bindRaw === "tailnet"
         ? bindRaw
         : "loopback";
 
@@ -212,10 +217,11 @@ export async function runOnboardingWizard(
   })();
 
   if (flow === "quickstart") {
-    const formatBind = (value: "loopback" | "lan" | "auto" | "custom") => {
+    const formatBind = (value: "loopback" | "lan" | "auto" | "custom" | "tailnet") => {
       if (value === "loopback") return "Loopback (127.0.0.1)";
       if (value === "lan") return "LAN";
       if (value === "custom") return "Custom IP";
+      if (value === "tailnet") return "Tailnet (Tailscale IP)";
       return "Auto";
     };
     const formatAuth = (value: GatewayAuthChoice) => {

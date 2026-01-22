@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
-import { HANDSHAKE_TIMEOUT_MS } from "./server-constants.js";
+import { getHandshakeTimeoutMs } from "./server-constants.js";
 import {
   connectReq,
   getFreePort,
@@ -11,6 +11,7 @@ import {
   startServerWithClient,
   testState,
 } from "./test-helpers.js";
+import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 
 installGatewayTestHooks();
 
@@ -28,10 +29,21 @@ async function waitForWsClose(ws: WebSocket, timeoutMs: number): Promise<boolean
 describe("gateway server auth/connect", () => {
   test("closes silent handshakes after timeout", { timeout: 60_000 }, async () => {
     vi.useRealTimers();
-    const { server, ws } = await startServerWithClient();
-    const closed = await waitForWsClose(ws, HANDSHAKE_TIMEOUT_MS + 2_000);
-    expect(closed).toBe(true);
-    await server.close();
+    const prevHandshakeTimeout = process.env.CLAWDBOT_TEST_HANDSHAKE_TIMEOUT_MS;
+    process.env.CLAWDBOT_TEST_HANDSHAKE_TIMEOUT_MS = "250";
+    try {
+      const { server, ws } = await startServerWithClient();
+      const handshakeTimeoutMs = getHandshakeTimeoutMs();
+      const closed = await waitForWsClose(ws, handshakeTimeoutMs + 2_000);
+      expect(closed).toBe(true);
+      await server.close();
+    } finally {
+      if (prevHandshakeTimeout === undefined) {
+        delete process.env.CLAWDBOT_TEST_HANDSHAKE_TIMEOUT_MS;
+      } else {
+        process.env.CLAWDBOT_TEST_HANDSHAKE_TIMEOUT_MS = prevHandshakeTimeout;
+      }
+    }
   });
 
   test("connect (req) handshake returns hello-ok payload", async () => {
@@ -53,6 +65,22 @@ describe("gateway server auth/connect", () => {
     expect(payload?.snapshot?.configPath).toBe(CONFIG_PATH_CLAWDBOT);
     expect(payload?.snapshot?.stateDir).toBe(STATE_DIR_CLAWDBOT);
 
+    ws.close();
+    await server.close();
+  });
+
+  test("sends connect challenge on open", async () => {
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const evtPromise = onceMessage<{ payload?: unknown }>(
+      ws,
+      (o) => o.type === "event" && o.event === "connect.challenge",
+    );
+    await new Promise<void>((resolve) => ws.once("open", resolve));
+    const evt = await evtPromise;
+    const nonce = (evt.payload as { nonce?: unknown } | undefined)?.nonce;
+    expect(typeof nonce).toBe("string");
     ws.close();
     await server.close();
   });
@@ -98,6 +126,205 @@ describe("gateway server auth/connect", () => {
 
     ws.close();
     await server.close();
+  });
+
+  test("rejects control ui without device identity by default", async () => {
+    const { server, ws, prevToken } = await startServerWithClient("secret");
+    const res = await connectReq(ws, {
+      token: "secret",
+      device: null,
+      client: {
+        id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+        version: "1.0.0",
+        platform: "web",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error?.message ?? "").toContain("secure context");
+    ws.close();
+    await server.close();
+    if (prevToken === undefined) {
+      delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+    } else {
+      process.env.CLAWDBOT_GATEWAY_TOKEN = prevToken;
+    }
+  });
+
+  test("allows control ui without device identity when insecure auth is enabled", async () => {
+    testState.gatewayControlUi = { allowInsecureAuth: true };
+    const { server, ws, prevToken } = await startServerWithClient("secret");
+    const res = await connectReq(ws, {
+      token: "secret",
+      device: null,
+      client: {
+        id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+        version: "1.0.0",
+        platform: "web",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+    });
+    expect(res.ok).toBe(true);
+    ws.close();
+    await server.close();
+    if (prevToken === undefined) {
+      delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+    } else {
+      process.env.CLAWDBOT_GATEWAY_TOKEN = prevToken;
+    }
+  });
+
+  test("accepts device token auth for paired device", async () => {
+    const { loadOrCreateDeviceIdentity } = await import("../infra/device-identity.js");
+    const { approveDevicePairing, getPairedDevice, listDevicePairing } =
+      await import("../infra/device-pairing.js");
+    const { server, ws, port, prevToken } = await startServerWithClient("secret");
+    const res = await connectReq(ws, { token: "secret" });
+    if (!res.ok) {
+      const list = await listDevicePairing();
+      const pending = list.pending.at(0);
+      expect(pending?.requestId).toBeDefined();
+      if (pending?.requestId) {
+        await approveDevicePairing(pending.requestId);
+      }
+    }
+
+    const identity = loadOrCreateDeviceIdentity();
+    const paired = await getPairedDevice(identity.deviceId);
+    const deviceToken = paired?.tokens?.operator?.token;
+    expect(deviceToken).toBeDefined();
+
+    ws.close();
+
+    const ws2 = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => ws2.once("open", resolve));
+    const res2 = await connectReq(ws2, { token: deviceToken });
+    expect(res2.ok).toBe(true);
+
+    ws2.close();
+    await server.close();
+    if (prevToken === undefined) {
+      delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+    } else {
+      process.env.CLAWDBOT_GATEWAY_TOKEN = prevToken;
+    }
+  });
+
+  test("requires pairing for scope upgrades", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { buildDeviceAuthPayload } = await import("./device-auth.js");
+    const { loadOrCreateDeviceIdentity, publicKeyRawBase64UrlFromPem, signDevicePayload } =
+      await import("../infra/device-identity.js");
+    const { approveDevicePairing, getPairedDevice, listDevicePairing } =
+      await import("../infra/device-pairing.js");
+    const { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } =
+      await import("../utils/message-channel.js");
+    const { server, ws, port, prevToken } = await startServerWithClient("secret");
+    const identityDir = await mkdtemp(join(tmpdir(), "clawdbot-device-scope-"));
+    const identity = loadOrCreateDeviceIdentity(join(identityDir, "device.json"));
+    const client = {
+      id: GATEWAY_CLIENT_NAMES.TEST,
+      version: "1.0.0",
+      platform: "test",
+      mode: GATEWAY_CLIENT_MODES.TEST,
+    };
+    const buildDevice = (scopes: string[]) => {
+      const signedAtMs = Date.now();
+      const payload = buildDeviceAuthPayload({
+        deviceId: identity.deviceId,
+        clientId: client.id,
+        clientMode: client.mode,
+        role: "operator",
+        scopes,
+        signedAtMs,
+        token: "secret",
+      });
+      return {
+        id: identity.deviceId,
+        publicKey: publicKeyRawBase64UrlFromPem(identity.publicKeyPem),
+        signature: signDevicePayload(identity.privateKeyPem, payload),
+        signedAt: signedAtMs,
+      };
+    };
+    const initial = await connectReq(ws, {
+      token: "secret",
+      scopes: ["operator.read"],
+      client,
+      device: buildDevice(["operator.read"]),
+    });
+    if (!initial.ok) {
+      const list = await listDevicePairing();
+      const pending = list.pending.at(0);
+      expect(pending?.requestId).toBeDefined();
+      if (pending?.requestId) {
+        await approveDevicePairing(pending.requestId);
+      }
+    }
+
+    let paired = await getPairedDevice(identity.deviceId);
+    expect(paired?.scopes).toContain("operator.read");
+
+    ws.close();
+
+    const ws2 = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => ws2.once("open", resolve));
+    const res = await connectReq(ws2, {
+      token: "secret",
+      scopes: ["operator.admin"],
+      client,
+      device: buildDevice(["operator.admin"]),
+    });
+    expect(res.ok).toBe(true);
+    paired = await getPairedDevice(identity.deviceId);
+    expect(paired?.scopes).toContain("operator.admin");
+
+    ws2.close();
+    await server.close();
+    if (prevToken === undefined) {
+      delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+    } else {
+      process.env.CLAWDBOT_GATEWAY_TOKEN = prevToken;
+    }
+  });
+
+  test("rejects revoked device token", async () => {
+    const { loadOrCreateDeviceIdentity } = await import("../infra/device-identity.js");
+    const { approveDevicePairing, getPairedDevice, listDevicePairing, revokeDeviceToken } =
+      await import("../infra/device-pairing.js");
+    const { server, ws, port, prevToken } = await startServerWithClient("secret");
+    const res = await connectReq(ws, { token: "secret" });
+    if (!res.ok) {
+      const list = await listDevicePairing();
+      const pending = list.pending.at(0);
+      expect(pending?.requestId).toBeDefined();
+      if (pending?.requestId) {
+        await approveDevicePairing(pending.requestId);
+      }
+    }
+
+    const identity = loadOrCreateDeviceIdentity();
+    const paired = await getPairedDevice(identity.deviceId);
+    const deviceToken = paired?.tokens?.operator?.token;
+    expect(deviceToken).toBeDefined();
+
+    await revokeDeviceToken({ deviceId: identity.deviceId, role: "operator" });
+
+    ws.close();
+
+    const ws2 = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => ws2.once("open", resolve));
+    const res2 = await connectReq(ws2, { token: deviceToken });
+    expect(res2.ok).toBe(false);
+
+    ws2.close();
+    await server.close();
+    if (prevToken === undefined) {
+      delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+    } else {
+      process.env.CLAWDBOT_GATEWAY_TOKEN = prevToken;
+    }
   });
 
   test("rejects invalid password", async () => {
@@ -149,6 +376,12 @@ describe("gateway server auth/connect", () => {
               version: "dev",
               platform: "web",
               mode: "webchat",
+            },
+            device: {
+              id: 123,
+              publicKey: "bad",
+              signature: "bad",
+              signedAt: "bad",
             },
           },
         }),

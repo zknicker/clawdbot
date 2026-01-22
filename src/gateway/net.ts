@@ -1,6 +1,6 @@
 import net from "node:net";
 
-import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
+import { pickPrimaryTailnetIPv4, pickPrimaryTailnetIPv6 } from "../infra/tailnet.js";
 
 export function isLoopbackAddress(ip: string | undefined): boolean {
   if (!ip) return false;
@@ -11,13 +11,30 @@ export function isLoopbackAddress(ip: string | undefined): boolean {
   return false;
 }
 
+function normalizeIPv4MappedAddress(ip: string): string {
+  if (ip.startsWith("::ffff:")) return ip.slice("::ffff:".length);
+  return ip;
+}
+
+export function isLocalGatewayAddress(ip: string | undefined): boolean {
+  if (isLoopbackAddress(ip)) return true;
+  if (!ip) return false;
+  const normalized = normalizeIPv4MappedAddress(ip.trim().toLowerCase());
+  const tailnetIPv4 = pickPrimaryTailnetIPv4();
+  if (tailnetIPv4 && normalized === tailnetIPv4.toLowerCase()) return true;
+  const tailnetIPv6 = pickPrimaryTailnetIPv6();
+  if (tailnetIPv6 && ip.trim().toLowerCase() === tailnetIPv6.toLowerCase()) return true;
+  return false;
+}
+
 /**
  * Resolves gateway bind host with fallback strategy.
  *
  * Modes:
  * - loopback: 127.0.0.1 (rarely fails, but handled gracefully)
  * - lan: always 0.0.0.0 (no fallback)
- * - auto: Tailnet IPv4 if available, else 0.0.0.0
+ * - tailnet: Tailnet IPv4 if available, else loopback
+ * - auto: Loopback if available, else 0.0.0.0
  * - custom: User-specified IP, fallback to 0.0.0.0 if unavailable
  *
  * @returns The bind address to use (never null)
@@ -34,6 +51,13 @@ export async function resolveGatewayBindHost(
     return "0.0.0.0"; // extreme fallback
   }
 
+  if (mode === "tailnet") {
+    const tailnetIP = pickPrimaryTailnetIPv4();
+    if (tailnetIP && (await canBindTo(tailnetIP))) return tailnetIP;
+    if (await canBindTo("127.0.0.1")) return "127.0.0.1";
+    return "0.0.0.0";
+  }
+
   if (mode === "lan") {
     return "0.0.0.0";
   }
@@ -48,8 +72,7 @@ export async function resolveGatewayBindHost(
   }
 
   if (mode === "auto") {
-    const tailnetIP = pickPrimaryTailnetIPv4();
-    if (tailnetIP && (await canBindTo(tailnetIP))) return tailnetIP;
+    if (await canBindTo("127.0.0.1")) return "127.0.0.1";
     return "0.0.0.0";
   }
 

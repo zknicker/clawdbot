@@ -151,6 +151,34 @@ describe("initSessionState RawBody", () => {
     expect(result.bodyStripped).toBe("");
   });
 
+  it("preserves argument casing while still matching reset triggers case-insensitively", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-rawbody-reset-case-"));
+    const storePath = path.join(root, "sessions.json");
+
+    const cfg = {
+      session: {
+        store: storePath,
+        resetTriggers: ["/new"],
+      },
+    } as ClawdbotConfig;
+
+    const ctx = {
+      RawBody: "/NEW KeepThisCase",
+      ChatType: "direct",
+      SessionKey: "agent:main:whatsapp:dm:S1",
+    };
+
+    const result = await initSessionState({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.bodyStripped).toBe("KeepThisCase");
+    expect(result.triggerBodyNormalized).toBe("/NEW KeepThisCase");
+  });
+
   it("falls back to Body when RawBody is undefined", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-rawbody-fallback-"));
     const storePath = path.join(root, "sessions.json");
@@ -406,5 +434,44 @@ describe("initSessionState reset policy", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("initSessionState channel reset overrides", () => {
+  it("uses channel-specific reset policy when configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-channel-idle-"));
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:discord:dm:123";
+    const sessionId = "session-override";
+    const updatedAt = Date.now() - (10080 - 1) * 60_000;
+
+    await saveSessionStore(storePath, {
+      [sessionKey]: {
+        sessionId,
+        updatedAt,
+      },
+    });
+
+    const cfg = {
+      session: {
+        store: storePath,
+        idleMinutes: 60,
+        resetByType: { dm: { mode: "idle", idleMinutes: 10 } },
+        resetByChannel: { discord: { mode: "idle", idleMinutes: 10080 } },
+      },
+    } as ClawdbotConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "Hello",
+        SessionKey: sessionKey,
+        Provider: "discord",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(false);
+    expect(result.sessionEntry.sessionId).toBe(sessionId);
   });
 });

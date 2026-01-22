@@ -14,7 +14,7 @@ Run these in order:
 ```bash
 clawdbot status
 clawdbot status --all
-clawdbot daemon status
+clawdbot gateway probe
 clawdbot logs --follow
 clawdbot doctor
 ```
@@ -38,10 +38,15 @@ Almost always a Node/npm PATH issue. Start here:
 - [Gateway troubleshooting](/gateway/troubleshooting)
 - [Gateway authentication](/gateway/authentication)
 
-### Daemon says running, but RPC probe fails
+### Control UI fails on HTTP (device identity required)
 
 - [Gateway troubleshooting](/gateway/troubleshooting)
-- [Background process / daemon](/gateway/background-process)
+- [Control UI](/web/control-ui#insecure-http)
+
+### Service says running, but RPC probe fails
+
+- [Gateway troubleshooting](/gateway/troubleshooting)
+- [Background process / service](/gateway/background-process)
 
 ### Model/auth failures (rate limit, billing, “all models failed”)
 

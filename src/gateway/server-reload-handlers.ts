@@ -1,13 +1,15 @@
 import type { CliDeps } from "../cli/deps.js";
 import type { loadConfig } from "../config/config.js";
 import { startGmailWatcher, stopGmailWatcher } from "../hooks/gmail-watcher.js";
-import { startHeartbeatRunner } from "../infra/heartbeat-runner.js";
+import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
 import {
   authorizeGatewaySigusr1Restart,
   setGatewaySigusr1RestartPolicy,
 } from "../infra/restart.js";
 import { setCommandLaneConcurrency } from "../process/command-queue.js";
+import { resolveAgentMaxConcurrent, resolveSubagentMaxConcurrent } from "../config/agent-limits.js";
+import { CommandLane } from "../process/lanes.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import type { ChannelKind, GatewayReloadPlan } from "./config-reload.js";
 import { resolveHooksConfig } from "./hooks.js";
@@ -16,7 +18,7 @@ import { buildGatewayCronService, type GatewayCronState } from "./server-cron.js
 
 type GatewayHotReloadState = {
   hooksConfig: ReturnType<typeof resolveHooksConfig>;
-  heartbeatRunner: { stop: () => void };
+  heartbeatRunner: HeartbeatRunner;
   cronState: GatewayCronState;
   browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> | null;
 };
@@ -55,8 +57,7 @@ export function createGatewayReloadHandlers(params: {
     }
 
     if (plan.restartHeartbeat) {
-      state.heartbeatRunner.stop();
-      nextState.heartbeatRunner = startHeartbeatRunner({ cfg: nextConfig });
+      nextState.heartbeatRunner.updateConfig(nextConfig);
     }
 
     resetDirectoryCache();
@@ -126,12 +127,9 @@ export function createGatewayReloadHandlers(params: {
       }
     }
 
-    setCommandLaneConcurrency("cron", nextConfig.cron?.maxConcurrentRuns ?? 1);
-    setCommandLaneConcurrency("main", nextConfig.agents?.defaults?.maxConcurrent ?? 1);
-    setCommandLaneConcurrency(
-      "subagent",
-      nextConfig.agents?.defaults?.subagents?.maxConcurrent ?? 1,
-    );
+    setCommandLaneConcurrency(CommandLane.Cron, nextConfig.cron?.maxConcurrentRuns ?? 1);
+    setCommandLaneConcurrency(CommandLane.Main, resolveAgentMaxConcurrent(nextConfig));
+    setCommandLaneConcurrency(CommandLane.Subagent, resolveSubagentMaxConcurrent(nextConfig));
 
     if (plan.hotReasons.length > 0) {
       params.logReload.info(`config hot reload applied (${plan.hotReasons.join(", ")})`);
