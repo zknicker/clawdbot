@@ -5,6 +5,7 @@ import { saveMediaBuffer } from "openclaw/plugin-sdk/media-runtime";
 import { buildMediaPayload } from "openclaw/plugin-sdk/reply-payload";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
+import { loadWebMedia } from "openclaw/plugin-sdk/web-media";
 
 const DISCORD_CDN_HOSTNAMES = [
   "cdn.discordapp.com",
@@ -280,13 +281,19 @@ async function appendResolvedMediaFromAttachments(params: {
   }
   for (const attachment of attachments) {
     try {
-      const fetched = await fetchRemoteMedia({
-        url: attachment.url,
-        filePathHint: attachment.filename ?? attachment.url,
-        maxBytes: params.maxBytes,
-        fetchImpl: params.fetchImpl,
-        ssrfPolicy: params.ssrfPolicy,
-      });
+      const fetched = isImageAttachment(attachment)
+        ? await loadWebMedia(attachment.url, {
+            maxBytes: params.maxBytes,
+            fetchImpl: params.fetchImpl,
+            ssrfPolicy: params.ssrfPolicy,
+          })
+        : await fetchRemoteMedia({
+            url: attachment.url,
+            filePathHint: attachment.filename ?? attachment.url,
+            maxBytes: params.maxBytes,
+            fetchImpl: params.fetchImpl,
+            ssrfPolicy: params.ssrfPolicy,
+          });
       const saved = await saveMediaBuffer(
         fetched.buffer,
         fetched.contentType ?? attachment.content_type,
