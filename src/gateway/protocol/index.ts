@@ -241,6 +241,18 @@ import {
   SnapshotSchema,
   type StateVersion,
   StateVersionSchema,
+  type TasksAuditParams,
+  TasksAuditParamsSchema,
+  type TasksCancelParams,
+  TasksCancelParamsSchema,
+  type TasksListParams,
+  TasksListParamsSchema,
+  type TasksMaintenanceParams,
+  TasksMaintenanceParamsSchema,
+  type TasksNotifyParams,
+  TasksNotifyParamsSchema,
+  type TasksShowParams,
+  TasksShowParamsSchema,
   type TalkModeParams,
   TalkModeParamsSchema,
   type TickEvent,
@@ -459,6 +471,14 @@ export const validateChatSendParams = ajv.compile(ChatSendParamsSchema);
 export const validateChatAbortParams = ajv.compile<ChatAbortParams>(ChatAbortParamsSchema);
 export const validateChatInjectParams = ajv.compile<ChatInjectParams>(ChatInjectParamsSchema);
 export const validateChatEvent = ajv.compile(ChatEventSchema);
+export const validateTasksListParams = ajv.compile<TasksListParams>(TasksListParamsSchema);
+export const validateTasksShowParams = ajv.compile<TasksShowParams>(TasksShowParamsSchema);
+export const validateTasksNotifyParams = ajv.compile<TasksNotifyParams>(TasksNotifyParamsSchema);
+export const validateTasksCancelParams = ajv.compile<TasksCancelParams>(TasksCancelParamsSchema);
+export const validateTasksAuditParams = ajv.compile<TasksAuditParams>(TasksAuditParamsSchema);
+export const validateTasksMaintenanceParams = ajv.compile<TasksMaintenanceParams>(
+  TasksMaintenanceParamsSchema,
+);
 export const validateUpdateRunParams = ajv.compile<UpdateRunParams>(UpdateRunParamsSchema);
 export const validateWebLoginStartParams =
   ajv.compile<WebLoginStartParams>(WebLoginStartParamsSchema);

@@ -164,6 +164,14 @@ import {
 } from "./sessions.js";
 import { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
 import {
+  TasksAuditParamsSchema,
+  TasksCancelParamsSchema,
+  TasksListParamsSchema,
+  TasksMaintenanceParamsSchema,
+  TasksNotifyParamsSchema,
+  TasksShowParamsSchema,
+} from "./tasks.js";
+import {
   WizardCancelParamsSchema,
   WizardNextParamsSchema,
   WizardNextResultSchema,
@@ -321,6 +329,12 @@ export const ProtocolSchemas = {
   ChatAbortParams: ChatAbortParamsSchema,
   ChatInjectParams: ChatInjectParamsSchema,
   ChatEvent: ChatEventSchema,
+  TasksListParams: TasksListParamsSchema,
+  TasksShowParams: TasksShowParamsSchema,
+  TasksNotifyParams: TasksNotifyParamsSchema,
+  TasksCancelParams: TasksCancelParamsSchema,
+  TasksAuditParams: TasksAuditParamsSchema,
+  TasksMaintenanceParams: TasksMaintenanceParamsSchema,
   UpdateRunParams: UpdateRunParamsSchema,
   TickEvent: TickEventSchema,
   ShutdownEvent: ShutdownEventSchema,

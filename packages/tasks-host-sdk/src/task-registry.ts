@@ -500,6 +500,31 @@ function restoreTaskRegistryOnce() {
   }
 }
 
+export function reloadTaskRegistryFromStore(): void {
+  restoreAttempted = true;
+  tasks.clear();
+  taskDeliveryStates.clear();
+  taskIdsByRunId.clear();
+  taskIdsBySessionKey.clear();
+  tasksWithPendingDelivery.clear();
+  try {
+    const restored = getTaskRegistryStore().loadSnapshot();
+    for (const [taskId, task] of restored.tasks.entries()) {
+      tasks.set(taskId, task);
+    }
+    for (const [taskId, state] of restored.deliveryStates.entries()) {
+      taskDeliveryStates.set(taskId, state);
+    }
+    rebuildRunIdIndex();
+    rebuildSessionKeyIndex();
+  } catch (error) {
+    log.warn("Failed to reload task registry from store", {
+      event: "task-registry.reload",
+      error,
+    });
+  }
+}
+
 export function ensureTaskRegistryReady() {
   restoreTaskRegistryOnce();
   ensureListener();

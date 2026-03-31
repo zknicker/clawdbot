@@ -92,6 +92,19 @@ function ensureFlowRegistryReady() {
   }
 }
 
+export function reloadFlowRegistryFromStore(): void {
+  restoreAttempted = true;
+  try {
+    const restored = getFlowRegistryStore().loadSnapshot();
+    flows.clear();
+    for (const [flowId, flow] of restored.flows) {
+      flows.set(flowId, cloneFlowRecord(flow));
+    }
+  } catch {
+    // best-effort refresh; keep current in-memory state on store read failure
+  }
+}
+
 function persistFlowRegistry() {
   getFlowRegistryStore().saveSnapshot({
     flows: new Map(snapshotFlowRecords(flows).map((flow) => [flow.flowId, flow])),
